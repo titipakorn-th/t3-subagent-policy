@@ -147,9 +147,14 @@ requesting a low-effort model still ran at the upstream default. Asking for "low
 
 ```bash
 ./patches/apply-antigravity-effort.sh            # patches the deployed shim (idempotent)
+python3 patches/apply-antigravity-effort.py       # same fix, works on any shim revision
 python3 patches/test_acp_clip_proxy_shim.py       # unit self-check for the routing logic
 python3 patches/test_clip_proxy_effort.py         # integration check: forwards thinkingLevel
 ```
+
+Every machine runs a slightly different shim revision, so the patcher edits the code by shape
+(`class State:` plus the forward block) instead of by byte offset, and refuses to touch a file it
+does not recognise. `antigravity-clip-effort.patch` is the raw diff for the macOS revision.
 
 The patch derives the effort from the selected model's name suffix and sends it as
 `generationConfig.thinkingConfig.thinkingLevel`, leaving the routed argon/claude behaviour

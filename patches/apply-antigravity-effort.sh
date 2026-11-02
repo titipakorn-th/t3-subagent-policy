@@ -9,13 +9,6 @@
 set -euo pipefail
 
 TARGET="${1:-$HOME/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py}"
-PATCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/antigravity-clip-effort.patch"
-
 [ -f "$TARGET" ] || { echo "not found: $TARGET"; exit 1; }
-if grep -q "thinking_level_for" "$TARGET"; then
-  echo "already patched: $TARGET"; exit 0
-fi
-
-cp "$TARGET" "$TARGET.bak-$(date +%s)"
-(cd "$(dirname "$TARGET")" && patch -p0 acp_clip_proxy_shim.py < "$PATCH")
+python3 "$(dirname "${BASH_SOURCE[0]}")/apply-antigravity-effort.py" "$TARGET"
 python3 -m py_compile "$TARGET" && echo "OK: $TARGET patched and compiles"
