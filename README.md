@@ -43,17 +43,19 @@ desktop app), so the port confusion doesn't recur. The wrapper makes it moot for
 
 ## What the policy does
 
-Writes one managed section into the two global instruction files every T3-spawned agent reads:
+Writes one managed section into the global instruction file of every provider family T3 can drive:
 
-| File | Read by |
-|---|---|
-| `~/.codex/AGENTS.md` | codex sessions, and codex's own internal subagents |
-| `~/.claude/CLAUDE.md` | claudeAgent sessions and Claude-SDK agents (including `mcode`/minimax) |
+| File | Provider | Note |
+|---|---|---|
+| `~/.codex/AGENTS.md` | codex | also read by codex's own internal subagents |
+| `~/.claude/CLAUDE.md` | claudeAgent, claude-sdk agents (mcode/minimax) | `CLAUDE.local.md` is user-local, not global |
+| `~/.config/opencode/AGENTS.md` | opencode | opencode resolves its global instructions to `<config dir>/AGENTS.md` |
+| `~/.gemini/GEMINI.md` | gemini / antigravity | |
 
-The installer is **idempotent** and **non-destructive**: it replaces only its own marked block
-(`<!-- t3-subagent-cost-policy:begin -->` … `end`), leaves machine-specific content alone
-(e.g. your `~/.codex/RTK.md` include), and writes a `.bak-<timestamp>` before changing
-anything.
+Existing content is preserved (e.g. your `@RTK.md` include, the graphify skill, the RTK notes in
+`GEMINI.md`). The installer replaces only its own marked block
+(`<!-- t3-subagent-cost-policy:begin -->` … `end`), creates the file when the provider has none
+yet, and writes a `.bak-<timestamp>` before changing anything.
 
 ## Files
 

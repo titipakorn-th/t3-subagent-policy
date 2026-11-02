@@ -26,9 +26,12 @@ if MODE == "help":
 BEGIN = "<!-- t3-subagent-cost-policy:begin -->"
 END = "<!-- t3-subagent-cost-policy:end -->"
 LEGACY_HEADING = "## Subagent cost policy"
+# One global instruction file per provider family T3 can drive.
 TARGETS = [
-    os.path.expanduser("~/.codex/AGENTS.md"),
-    os.path.expanduser("~/.claude/CLAUDE.md"),
+    os.path.expanduser("~/.codex/AGENTS.md"),            # codex
+    os.path.expanduser("~/.claude/CLAUDE.md"),           # claudeAgent / claude-sdk agents
+    os.path.expanduser("~/.config/opencode/AGENTS.md"),  # opencode (global AGENTS.md)
+    os.path.expanduser("~/.gemini/GEMINI.md"),           # gemini / antigravity
 ]
 
 policy_path = os.path.join(DIR, "policy.md")
@@ -64,7 +67,9 @@ def install(path: str) -> str:
         return "unchanged"
     if os.path.exists(path):
         shutil.copy2(path, f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
     open(path, "w").write(new)
     return "installed"
 
