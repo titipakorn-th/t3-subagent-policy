@@ -33,7 +33,16 @@ else
 fi
 
 mint_token() {
-  "${T3_CODE_CLI:-$HOME/.t3/bin/t3}" auth session issue \
+  local cli="${T3_CODE_CLI:-}"
+  if [ -z "$cli" ]; then
+    if [ -x "$HOME/.t3/bin/t3" ]; then
+      cli="$HOME/.t3/bin/t3"
+    else
+      cli="$(command -v t3 2>/dev/null || true)"
+    fi
+  fi
+  [ -n "$cli" ] || return 1
+  "$cli" auth session issue \
     --subject mcp-client --label "acp-auto" \
     --scope orchestration:read --scope orchestration:operate \
     --ttl 1h --token-only 2>/dev/null | grep -E '^[A-Za-z0-9._-]{40,}$' | head -1
