@@ -135,6 +135,9 @@ curl -s http://127.0.0.1:3773/api/auth/session | head -c 200   # which environme
 
 ## Known limits
 
+- This policy steers **subagents only**. The model and effort the user picks for the main thread are
+  never restricted, and no models are hidden from the picker — the goal is that *children* spawn on
+  cheap models at low/medium effort, not that you lose access to any model.
 - A thread whose model selection is set to `high`/`max` in the T3 UI still propagates that effort to
   every child session — T3 passes it via `--config model_reasoning_effort=...` before any
   instruction file is read. Keep the thread at `low`/`medium`.
