@@ -50,7 +50,12 @@ Writes one managed section into the global instruction file of every provider fa
 | `~/.codex/AGENTS.md` | codex | also read by codex's own internal subagents |
 | `~/.claude/CLAUDE.md` | claudeAgent, claude-sdk agents (mcode/minimax) | `CLAUDE.local.md` is user-local, not global |
 | `~/.config/opencode/AGENTS.md` | opencode | opencode resolves its global instructions to `<config dir>/AGENTS.md` |
-| `~/.gemini/GEMINI.md` | gemini / antigravity | |
+| `~/.gemini/GEMINI.md` | gemini CLI | only when that gemini home exists |
+| `~/.t3/tools/antigravity-cliproxy/gemini-home/GEMINI.md` | antigravity via T3's clip proxy | the proxy sets `GEMINI_HOME` to its own directory, so the plain `~/.gemini/GEMINI.md` is **not** read by it |
+
+The installer discovers the gemini homes that actually exist on the machine (`GEMINI_HOME`,
+`~/.gemini`, and T3's clip-proxy home) and writes the policy into each of them. A file for a
+provider that isn't installed is never created.
 
 Existing content is preserved (e.g. your `@RTK.md` include, the graphify skill, the RTK notes in
 `GEMINI.md`). The installer replaces only its own marked block

@@ -26,13 +26,31 @@ if MODE == "help":
 BEGIN = "<!-- t3-subagent-cost-policy:begin -->"
 END = "<!-- t3-subagent-cost-policy:end -->"
 LEGACY_HEADING = "## Subagent cost policy"
+
+
+def gemini_targets():
+    """Gemini reads GEMINI.md from GEMINI_HOME. T3's antigravity clip proxy sets
+    GEMINI_HOME to its own directory, so ~/.gemini/GEMINI.md alone is not enough."""
+    homes = []
+    env_home = os.environ.get("GEMINI_HOME")
+    if env_home:
+        homes.append(env_home)
+    homes.append(os.path.expanduser("~/.gemini"))
+    homes.append(os.path.expanduser("~/.t3/tools/antigravity-cliproxy/gemini-home"))
+    out = []
+    for home in homes:
+        path = os.path.join(home, "GEMINI.md")
+        if path not in out and (os.path.isdir(home) or os.path.exists(path)):
+            out.append(path)
+    return out
+
+
 # One global instruction file per provider family T3 can drive.
 TARGETS = [
     os.path.expanduser("~/.codex/AGENTS.md"),            # codex
     os.path.expanduser("~/.claude/CLAUDE.md"),           # claudeAgent / claude-sdk agents
     os.path.expanduser("~/.config/opencode/AGENTS.md"),  # opencode (global AGENTS.md)
-    os.path.expanduser("~/.gemini/GEMINI.md"),           # gemini / antigravity
-]
+] + gemini_targets()
 
 policy_path = os.path.join(DIR, "policy.md")
 if not os.path.exists(policy_path):
