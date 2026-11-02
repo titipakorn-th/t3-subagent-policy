@@ -138,6 +138,22 @@ curl -s http://127.0.0.1:3773/api/auth/session | head -c 200   # which environme
 ~/t3-subagent-policy/install.sh --uninstall
 ```
 
+## Provider-level fix: antigravity clip ignored the requested effort
+
+T3's antigravity clip proxy (`~/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py`) only sent
+an effort upstream for the models in its `PROXY_MODELS` table (`gemini-4-argon-*`,
+`claude-*-*`). Every other model — including `gemini-3.8-flash-low` — was forwarded untouched, so
+requesting a low-effort model still ran at the upstream default. Asking for "low" was cosmetic.
+
+```bash
+./patches/apply-antigravity-effort.sh            # patches the deployed shim (idempotent)
+python3 patches/test_acp_clip_proxy_shim.py       # self-check for the routing logic
+```
+
+The patch derives the effort from the selected model's name suffix and sends it as
+`generationConfig.thinkingConfig.thinkingLevel`, leaving the routed argon/claude behaviour
+untouched. New provider sessions pick it up — no T3 restart needed.
+
 ## Known limits
 
 - This policy steers **subagents only**. The model and effort the user picks for the main thread are

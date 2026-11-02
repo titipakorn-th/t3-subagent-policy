@@ -37,6 +37,7 @@ def gemini_targets():
         homes.append(env_home)
     homes.append(os.path.expanduser("~/.gemini"))
     homes.append(os.path.expanduser("~/.t3/tools/antigravity-cliproxy/gemini-home"))
+    homes.append(os.path.expanduser("~/.t3/tools/antigravity-cliproxy/gemini-home/antigravity-acp"))
     out = []
     for home in homes:
         path = os.path.join(home, "GEMINI.md")

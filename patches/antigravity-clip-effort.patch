@@ -1,0 +1,61 @@
+--- acp_clip_proxy_shim.py
++++ acp_clip_proxy_shim.py
+@@ -69,6 +69,37 @@
+             return self.proxy_model
+ 
+ 
++THINKING_LEVELS = ("low", "medium", "high")
++
++
++def thinking_level_for(model):
++    """Effort to send upstream for the model the client selected.
++
++    Routed models (argon, claude) carry their level in PROXY_MODELS. Anything else is
++    forwarded as-is, so the requested suffix is the only effort signal available:
++    without it 'gemini-3.8-flash-low' silently ran at the upstream default.
++    """
++    if not isinstance(model, str):
++        return None
++    if model in PROXY_MODELS:
++        return PROXY_MODELS[model][1]
++    suffix = model.rsplit("-", 1)[-1]
++    return suffix if suffix in THINKING_LEVELS else None
++
++
++def apply_thinking_level(body, level):
++    if body is None or not level:
++        return body
++    try:
++        payload = json.loads(body)
++        generation = payload.setdefault("generationConfig", {})
++        thinking = generation.setdefault("thinkingConfig", {})
++        thinking["thinkingLevel"] = level
++        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
++    except (TypeError, ValueError):
++        return body
++
++
+ state = State()
+ 
+ 
+@@ -125,17 +156,11 @@
+                 if old in path:
+                     path = path.replace(old, new, 1)
+                     break
++        else:
++            body_level = thinking_level_for(selected_model)
+         length = int(self.headers.get("Content-Length", "0") or 0)
+         body = self.rfile.read(length) if length else None
+-        if body is not None and body_level:
+-            try:
+-                payload = json.loads(body)
+-                generation = payload.setdefault("generationConfig", {})
+-                thinking = generation.setdefault("thinkingConfig", {})
+-                thinking["thinkingLevel"] = body_level
+-                body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+-            except (TypeError, ValueError):
+-                pass
++        body = apply_thinking_level(body, body_level)
+         headers = {
+             key: value
+             for key, value in self.headers.items()
