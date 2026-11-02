@@ -147,7 +147,8 @@ requesting a low-effort model still ran at the upstream default. Asking for "low
 
 ```bash
 ./patches/apply-antigravity-effort.sh            # patches the deployed shim (idempotent)
-python3 patches/test_acp_clip_proxy_shim.py       # self-check for the routing logic
+python3 patches/test_acp_clip_proxy_shim.py       # unit self-check for the routing logic
+python3 patches/test_clip_proxy_effort.py         # integration check: forwards thinkingLevel
 ```
 
 The patch derives the effort from the selected model's name suffix and sends it as
