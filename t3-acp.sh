@@ -67,14 +67,8 @@ add_endpoint "$TS_IP" "$PORT"
 add_endpoint "$LAN_IP" "$PORT"
 
 mint_token() {
-  local cli="${T3_CODE_CLI:-}"
-  if [ -z "$cli" ]; then
-    if [ -x "$HOME/.t3/bin/t3" ]; then
-      cli="$HOME/.t3/bin/t3"
-    else
-      cli="$(command -v t3 2>/dev/null || true)"
-    fi
-  fi
+  local cli
+  cli="$(t3_cli)" || return 1
   [ -n "$cli" ] || return 1
   "$cli" auth session issue \
     --subject mcp-client --label "acp-auto" \
@@ -82,13 +76,31 @@ mint_token() {
     --ttl 1h --token-only 2>/dev/null | grep -E '^[A-Za-z0-9._-]{40,}$' | head -1
 }
 
+# The T3 CLI: explicit override, the launcher, or the newest runtime build.
+t3_cli() {
+  if [ -n "${T3_CODE_CLI:-}" ]; then printf '%s' "$T3_CODE_CLI"; return 0; fi
+  if [ -x "$HOME/.t3/bin/t3" ]; then printf '%s' "$HOME/.t3/bin/t3"; return 0; fi
+  local c
+  c="$(ls -t "$HOME"/.t3/runtime/versions/*/t3 2>/dev/null | head -1)"
+  [ -n "$c" ] && printf '%s' "$c"
+}
+
+# The ACP bridge: the Electron app's, or the T3 CLI's built-in one.
 call() {
   local endpoint="$1" auth="$2"
   shift 2
-  T3_ACP_MCP_ENDPOINT="$endpoint" T3_ACP_MCP_AUTHORIZATION="$auth" \
-  ELECTRON_RUN_AS_NODE=1 "$T3_ACP_MCP_NODE" \
-    ${T3_ACP_MCP_ENTRYPOINT:+"$T3_ACP_MCP_ENTRYPOINT"} \
-    acp-mcp-call "$@"
+  if [ -n "${T3_ACP_MCP_NODE:-}" ]; then
+    T3_ACP_MCP_ENDPOINT="$endpoint" T3_ACP_MCP_AUTHORIZATION="$auth" \
+    ELECTRON_RUN_AS_NODE=1 "$T3_ACP_MCP_NODE" \
+      ${T3_ACP_MCP_ENTRYPOINT:+"$T3_ACP_MCP_ENTRYPOINT"} \
+      acp-mcp-call "$@"
+  else
+    local cli
+    cli="$(t3_cli)" || return 127
+    [ -n "$cli" ] || return 127
+    T3_ACP_MCP_ENDPOINT="$endpoint" T3_ACP_MCP_AUTHORIZATION="$auth" \
+      "$cli" acp-mcp-call "$@"
+  fi
 }
 
 TOKENS=()
