@@ -5,13 +5,19 @@ The patcher edits the deployed proxy by shape, so its "new" strings have to
 match the known-good file byte for byte. Hand-editing both sides drifts, so
 this script copies the blocks out of the known-good file instead.
 
+It also writes the table of older patch revisions, taken from this repo's own
+history, so the patcher can migrate a proxy that carries an older revision
+instead of leaving it behind.
+
     python3 sync-patcher-blocks.py
 
 Run it after editing mcode-acp-proxy-steer.js, then run test_mcode_acp_steer.py
 to confirm the patcher and the known-good file still agree.
 """
+import hashlib
 import os
 import re
+import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "mcode-acp-proxy-steer.js")
@@ -65,6 +71,32 @@ def replace_block(text, name, body):
     return pattern.sub(lambda m: f'{name} = r"""{body}"""', text, count=1)
 
 
+def older_revisions():
+    """The sha256 of every earlier revision of the known-good file.
+
+    A proxy carrying one of these was patched from the same baseline, so the
+    current known-good file replaces it exactly.
+    """
+    try:
+        revisions = subprocess.run(
+            ["git", "log", "--format=%H", "--", "patches/mcode-acp-proxy-steer.js"],
+            cwd=os.path.dirname(HERE), capture_output=True, text=True, check=True,
+        ).stdout.split()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {}
+    table = {}
+    for sha in revisions:
+        blob = subprocess.run(
+            ["git", "show", f"{sha}:patches/mcode-acp-proxy-steer.js"],
+            cwd=os.path.dirname(HERE), capture_output=True, text=True,
+        )
+        if blob.returncode != 0:
+            continue
+        digest = hashlib.sha256(blob.stdout.encode()).hexdigest()
+        table[digest] = sha[:12]
+    return table
+
+
 for name, (start, end) in BLOCKS.items():
     # One trailing newline: the baseline keeps its own blank lines after the
     # replaced region, so the block must not add one of its own.
@@ -97,5 +129,16 @@ if '("intercept", INTERCEPT_OLD, INTERCEPT_NEW)' not in patcher:
         '    ("spawn", SPAWN_OLD, SPAWN_NEW),',
         '    ("spawn", SPAWN_OLD, SPAWN_NEW),\n    ("intercept", INTERCEPT_OLD, INTERCEPT_NEW),',
     )
+
+# The table of older patch revisions, so the patcher can migrate them.
+revisions = older_revisions()
+table = "KNOWN_OLD_REVISIONS = {\n" + "".join(
+    f'    "{digest}": "{sha}",\n' for digest, sha in sorted(revisions.items())
+) + "}\n"
+patcher = re.sub(r"^KNOWN_OLD_REVISIONS = \{.*?^\}\n", table, patcher, flags=re.S | re.M)
+if "KNOWN_OLD_REVISIONS = {" not in patcher:
+    patcher = patcher.replace("EDITS = [", table + "\nEDITS = [", 1)
+
 open(PATCHER, "w").write(patcher)
 print("patcher blocks regenerated from", os.path.basename(FIXTURE))
+print(f"known older patch revisions: {len(revisions)}")

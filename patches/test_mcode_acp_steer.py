@@ -97,4 +97,28 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     check("reverting twice is a no-op", result.returncode == 0 and "not a patched proxy" in result.stdout, True)
 
+    # 7. A proxy carrying an older revision of this patch is migrated, not
+    #    skipped: that is what a machine that was patched earlier needs.
+    if patcher.KNOWN_OLD_REVISIONS:
+        digest, sha = sorted(patcher.KNOWN_OLD_REVISIONS.items())[0]
+        blob = subprocess.run(
+            ["git", "show", f"{sha}:patches/mcode-acp-proxy-steer.js"],
+            capture_output=True, text=True,
+        )
+        if blob.returncode == 0:
+            open(target, "w").write(blob.stdout)
+            result = run(target)
+            check("an older patch revision is migrated", result.returncode == 0, True)
+            check("the migration is reported", "migrated" in result.stdout, True)
+            check("the migrated file is the current revision", open(target).read() == good, True)
+        else:
+            print(f"skip   the migration check (no git checkout for {sha})")
+
+    # 8. A proxy carrying a patch this patcher does not know is refused.
+    unknown = os.path.join(tmp, "unknown-patch.js")
+    open(unknown, "w").write(good.replace("const MCODE_ACP_PATCH = 2;", "const MCODE_ACP_PATCH = 99;"))
+    result = run(unknown)
+    check("an unknown patch revision is refused", result.returncode != 0, True)
+    check("the refusal says so", "does not know" in (result.stderr + result.stdout), True)
+
 print("\nall checks passed")

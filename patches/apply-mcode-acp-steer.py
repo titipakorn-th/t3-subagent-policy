@@ -29,6 +29,7 @@ touch a file it does not recognise.
 
     python3 apply-mcode-acp-steer.py [path-to-mcode-acp-proxy.js]
 """
+import hashlib
 import os
 import shutil
 import subprocess
@@ -39,11 +40,15 @@ DEFAULT = os.path.expanduser("~/.minimax-code/bin/mcode-acp-proxy.js")
 TARGET = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
 
 MARKER = "RETRYABLE_REJECTION"
+VERSION_MARKER = "const MCODE_ACP_PATCH = 2;"
 
 STATE_OLD = """const cancelledSessions = new Set();
 """
 
 STATE_NEW = r"""const cancelledSessions = new Set();
+// The patch revision this file carries. The patcher uses it to tell revisions
+// apart, and it is what makes an older patch migratable instead of skipped.
+const MCODE_ACP_PATCH = 2;
 // The agent runs one prompt turn per session at a time. A second session/prompt
 // that arrives while a turn is still running is rejected with "A prompt is
 // already active for this session.", and once the turn has ended the runtime
@@ -741,6 +746,14 @@ INTERCEPT_NEW = r"""function interceptIncoming(line) {
     }
 """
 
+KNOWN_OLD_REVISIONS = {
+    "263758964a684471e3a4ac0ef50364656706bc0f94c4f710e28700d85eea01d9": "8e2225d52633",
+    "35e7872210e7904e96b2c7ac6389bbd29207281016cf63248c41d406c0c9b0a9": "bc891118e2a0",
+    "7bb772223fe309c1a746c75fead148267fc2e24e1af02c0541fcd11d7ef448b3": "49394c80f39a",
+    "c85ccb1f1637e34a42c2ad17a93c36cf01b8b1f575baf594fcc89330fa95bc05": "b99573d9c944",
+    "e757624bd1fbfd2fde80ba8dc4d328bd4a2cecadf1fec4b83e42c6924cbb98df": "7ba2cde078b3",
+}
+
 EDITS = [
     ("state", STATE_OLD, STATE_NEW),
     ("helpers", IDKEY_OLD, IDKEY_NEW),
@@ -792,9 +805,36 @@ def main():
         print("new ACP processes pick this up; restart T3 Code or open a new thread.")
         return 0
 
-    if MARKER in src:
+    if VERSION_MARKER in src:
         print(f"already patched: {TARGET}")
         return 0
+
+    # An older revision of this patch: the file was patched from the same
+    # baseline, so the current known-good file replaces it exactly.
+    digest = hashlib.sha256(src.encode()).hexdigest()
+    if digest in KNOWN_OLD_REVISIONS:
+        known_good = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "mcode-acp-proxy-steer.js")
+        if not os.path.exists(known_good):
+            sys.exit(f"older patch revision {KNOWN_OLD_REVISIONS[digest]}, but {known_good} is missing")
+        replacement = open(known_good).read()
+        backup = f"{TARGET}.bak-{time.strftime('%Y%m%dT%H%M%S')}"
+        shutil.copy2(TARGET, backup)
+        open(TARGET, "w").write(replacement)
+        check = subprocess.run(["node", "--check", TARGET], capture_output=True, text=True)
+        if check.returncode != 0:
+            shutil.copy2(backup, TARGET)
+            sys.exit(f"replacement does not parse; restored backup: {check.stderr.strip()}")
+        print(f"migrated an older patch ({KNOWN_OLD_REVISIONS[digest]}) to the current revision: {TARGET}")
+        print(f"backup: {backup}")
+        print("new ACP processes pick this up; restart T3 Code or open a new thread.")
+        return 0
+
+    if MARKER in src:
+        sys.exit(
+            f"the proxy carries a patch revision this patcher does not know "
+            f"({digest}); update the patcher instead of working around it"
+        )
 
     patched, error = patch(src)
     if patched is None:

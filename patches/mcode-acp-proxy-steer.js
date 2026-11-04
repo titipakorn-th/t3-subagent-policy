@@ -8,6 +8,9 @@ const activeElicitations = new Map();
 const pendingPrompts = new Map();
 const recoveryPrompts = new Map();
 const cancelledSessions = new Set();
+// The patch revision this file carries. The patcher uses it to tell revisions
+// apart, and it is what makes an older patch migratable instead of skipped.
+const MCODE_ACP_PATCH = 2;
 // The agent runs one prompt turn per session at a time. A second session/prompt
 // that arrives while a turn is still running is rejected with "A prompt is
 // already active for this session.", and once the turn has ended the runtime
