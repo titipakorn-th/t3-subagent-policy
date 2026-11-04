@@ -478,8 +478,35 @@ function handleExtensionNotification(line) {
   const sessionId = msg.params?.sessionId;
   if (msg.method === 'mcode/session/goal_update') {
     handleGoalUpdate(sessionId, msg.params?.goal);
+  } else if (msg.method === 'mcode/session/delegation_update') {
+    handleDelegationUpdate(sessionId, msg.params?.snapshot);
   }
   return true;
+}
+
+// mcode spawned children of its own. T3 Code owns the orchestration, so the
+// client is told: a silent second orchestrator would be invisible otherwise.
+function delegationSummary(snapshot) {
+  const members = snapshot?.members ?? [];
+  if (!Array.isArray(members) || members.length === 0) return null;
+  const names = members.map((member) => member?.title || member?.role || member?.sessionId || 'child');
+  return `mcode started ${members.length} internal ${members.length === 1 ? 'delegate' : 'delegates'}: ${names.join(', ')}. T3 Code owns the orchestration - these do not appear as T3 threads.`;
+}
+
+function handleDelegationUpdate(sessionId, snapshot) {
+  const text = delegationSummary(snapshot);
+  if (!text) return;
+  writeClientMessage({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text },
+      },
+    },
+  });
 }
 
 // Tell the client when the goal changes state.

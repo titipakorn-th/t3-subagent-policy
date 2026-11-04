@@ -218,7 +218,12 @@ node patches/test_mcode_acp_goal_continuation.mjs    # the goal working on its o
 node patches/test_mcode_acp_goal_prompt_collision.mjs  # a prompt during a goal turn
 ./patches/remove-plugin.sh goal-mode@local     # remove a plugin and stop its leftover servers
 ./patches/test_install_lifecycle.sh            # install/check/uninstall on a machine that has nothing
+node patches/doctor.mjs                        # does this machine have the whole chain?
 ```
+
+`doctor.mjs` runs the real agent and reports each part: the proxy is patched and matches the
+known-good file, the agent advertises the extension methods, the goal command reaches the client,
+and a goal survives the round trip through the native store.
 
 The antigravity checks run standalone and under pytest:
 
@@ -261,6 +266,11 @@ mcp_invoke with tool_name "mcp__t3-code__delegate_task") ...
 ```
 
 Set `MCODE_APPEND_SYSTEM_PROMPT_FILE` to a file to append more of your own.
+
+A directive is not a guarantee, so the proxy also watches for mcode's own
+delegation: if the agent starts children of its own, the client is told
+("mcode started 2 internal delegates: ..."). A second orchestrator is visible
+instead of silent.
 
 ## Goals: the native API, not the plugin
 

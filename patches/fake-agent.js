@@ -42,6 +42,17 @@ rl.on('line', (line) => {
   }
   if (msg.method === 'session/new') {
     reply({ sessionId: 'sess-1' });
+    if (mode === 'delegation') {
+      // The agent started children of its own.
+      process.stdout.write(JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'mcode/session/delegation_update',
+        params: {
+          sessionId: 'sess-1',
+          snapshot: { schemaVersion: 1, rootSessionId: 'sess-1', members: [{ title: 'worker-one' }, { title: 'worker-two' }] },
+        },
+      }) + '\n');
+    }
     return;
   }
   if (msg.method === 'mcode/session/steer') {
