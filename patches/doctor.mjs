@@ -8,10 +8,11 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
-const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
+const PROXY = process.argv[2] || path.join(os.homedir(), '.minimax-code/bin/mcode-acp-proxy.js');
 const FIXTURE = path.join(HERE, 'mcode-acp-proxy-steer.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
