@@ -14,7 +14,22 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DEFAULT = os.path.expanduser("~/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py")
-target = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
+
+
+def target_from_argv():
+    """The shim to test.
+
+    Under pytest sys.argv holds the test files, so only a file that does not
+    look like a test is taken as the shim.
+    """
+    for arg in sys.argv[1:]:
+        name = os.path.basename(arg)
+        if name.endswith(".py") and not name.startswith("test_") and os.path.exists(arg):
+            return arg
+    return DEFAULT
+
+
+target = target_from_argv()
 spec = importlib.util.spec_from_file_location("shim", target)
 if spec is None or spec.loader is None:
     from importlib.machinery import SourceFileLoader
@@ -73,14 +88,22 @@ def probe(selected_model, expect_level):
     print(f"     forwarded path: {received['path']}")
 
 
-probe("gemini-3.8-flash-low", "low")
-probe("gemini-3.8-flash-medium", "medium")
-probe("gemini-3.8-flash-high", "high")
-probe("gemini-4-argon-low", "low")
+def test_effort_reaches_the_upstream():
+    try:
+        probe("gemini-3.8-flash-low", "low")
+        probe("gemini-3.8-flash-medium", "medium")
+        probe("gemini-3.8-flash-high", "high")
+        probe("gemini-4-argon-low", "low")
+    finally:
+        proxy.shutdown()
+        upstream.shutdown()
+    assert not failures, f"failed: {failures}"
 
-proxy.shutdown()
-upstream.shutdown()
 
-if failures:
-    sys.exit(f"failed: {failures}")
-print("\nall checks passed")
+def main():
+    test_effort_reaches_the_upstream()
+    print("\nall checks passed")
+
+
+if __name__ == "__main__":
+    main()

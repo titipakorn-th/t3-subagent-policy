@@ -217,6 +217,15 @@ node patches/test_mcode_acp_goal_bridge.mjs    # the goal commands, end to end
 node patches/test_mcode_acp_goal_continuation.mjs    # the goal working on its own
 node patches/test_mcode_acp_goal_prompt_collision.mjs  # a prompt during a goal turn
 ./patches/remove-plugin.sh goal-mode@local     # remove a plugin and stop its leftover servers
+./patches/test_install_lifecycle.sh            # install/check/uninstall on a machine that has nothing
+```
+
+The antigravity checks run standalone and under pytest:
+
+```bash
+python3 patches/test_acp_clip_proxy_shim.py    # unit self-check for the clip proxy
+python3 patches/test_clip_proxy_effort.py      # the effort really reaches the upstream
+pytest patches/test_acp_clip_proxy_shim.py patches/test_clip_proxy_effort.py
 ```
 
 If the agent keeps refusing the prompt, the proxy resends it with a growing backoff and gives up
