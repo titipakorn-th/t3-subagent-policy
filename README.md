@@ -160,6 +160,45 @@ The patch derives the effort from the selected model's name suffix and sends it 
 `generationConfig.thinkingConfig.thinkingLevel`, leaving the routed argon/claude behaviour
 untouched. New provider sessions pick it up — no T3 restart needed.
 
+## Provider-level fix: force sending a message broke the thread
+
+Symptom: in T3 Code, force sending a message while the agent was still working failed and the
+thread became unusable — every later message in that thread failed too.
+
+Cause: T3 declares ACP providers as `supportsActiveSteering: false`, so a force send is an
+interrupt plus a restart: `session/cancel` and the new `session/prompt` go out back to back. The
+agent runs one prompt turn per session, so the new prompt arrived while the cancelled turn was
+still winding down and was rejected:
+
+```
+-32602 Invalid params: A prompt is already active for this session.
+```
+
+and once that turn had ended, the runtime still owned it for a moment and answered:
+
+```
+-32603 Session already has an active Turn. Use queue send to deliver the message after it.
+```
+
+Fix: `~/.minimax-code/bin/mcode-acp-proxy.js` now holds a prompt that arrives during a running
+turn, releases it once that turn has finished, and resends it while the runtime still reports the
+turn as busy. Duplicate and idle cancels are dropped, because the agent uses them to swallow the
+next prompt of that session.
+
+```bash
+./patches/apply-mcode-acp-steer.py            # patches the deployed proxy (idempotent)
+python3 patches/apply-mcode-acp-steer.py       # same fix, works on any proxy revision
+python3 patches/test_mcode_acp_steer.py        # unit self-check for the patcher
+node patches/test_mcode_acp_steer.mjs          # scenario check against a live agent
+```
+
+The proxy is the same script on every machine, so the patcher edits it by shape instead of by byte
+offset and refuses to touch a file it does not recognise. `mcode-acp-proxy-steer.js` is the
+known-good patched file; the patcher compares its result against it when that file is next to it.
+
+The running ACP process keeps the old code in memory, so **restart T3 Code or open a new thread**
+after patching — T3 spawns the ACP runtime per thread.
+
 ## Known limits
 
 - This policy steers **subagents only**. The model and effort the user picks for the main thread are
