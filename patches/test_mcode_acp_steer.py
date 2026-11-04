@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory() as tmp:
     result = run(target)
     check("second run exits 0", result.returncode, 0)
     check("second run is a no-op", "already patched" in result.stdout, True)
-    check("second run leaves the file alone", open(target).read(), before)
+    check("second run leaves the file alone", open(target).read() == before, True)
 
     # 3. A file it does not recognise is refused, not mangled.
     unknown = os.path.join(tmp, "unknown.js")
@@ -69,5 +69,19 @@ with tempfile.TemporaryDirectory() as tmp:
     result = run(missing)
     check("missing file is reported", result.returncode != 0, True)
     check("missing file was not created", os.path.exists(missing), False)
+
+    # 5. The older proxy revision (502-only recovery) is patched too: the fix
+    #    only needs the transport layer, which both revisions share.
+    older = baseline.replace(
+        "const cancelledSessions = new Set();",
+        "const cancelledSessions = new Set();\nconst legacyMarker = true;",
+        1,
+    )
+    legacy = os.path.join(tmp, "legacy.js")
+    open(legacy, "w").write(older)
+    result = run(legacy)
+    check("legacy revision is patched", result.returncode == 0, True)
+    check("legacy revision keeps its own code", "legacyMarker" in open(legacy).read(), True)
+    check("legacy revision got the fix", "RETRYABLE_REJECTION" in open(legacy).read(), True)
 
 print("\nall checks passed")

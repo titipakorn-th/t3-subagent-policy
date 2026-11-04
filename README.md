@@ -192,9 +192,11 @@ python3 patches/test_mcode_acp_steer.py        # unit self-check for the patcher
 node patches/test_mcode_acp_steer.mjs          # scenario check against a live agent
 ```
 
-The proxy is the same script on every machine, so the patcher edits it by shape instead of by byte
-offset and refuses to touch a file it does not recognise. `mcode-acp-proxy-steer.js` is the
-known-good patched file; the patcher compares its result against it when that file is next to it.
+The proxy is the same script on every machine, and machines run different revisions of it (the
+recovery handling differs between them), so the patcher edits it by shape instead of by byte offset
+and refuses to touch a file it does not recognise. The fix sits in the transport layer — the stdin
+and stdout plumbing — because that part is identical in every revision;
+`mcode-acp-proxy-steer.js` is the known-good patched file.
 
 The running ACP process keeps the old code in memory, so **restart T3 Code or open a new thread**
 after patching — T3 spawns the ACP runtime per thread.
