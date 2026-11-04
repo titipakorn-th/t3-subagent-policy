@@ -69,6 +69,10 @@ yet, and writes a `.bak-<timestamp>` before changing anything.
 | `policy.md` | Single source of truth for the policy text |
 | `install.sh` | Idempotent installer (`--check`, `--uninstall`, `--print`) |
 | `t3-acp.sh` | ACP call wrapper: live-endpoint resolution + 401 self-heal |
+| `patches/apply-mcode-acp-steer.py` | Patches the deployed mcode ACP proxy: steering, goals, system prompt |
+| `patches/mcode-acp-proxy-steer.js` | The known-good patched proxy (the patcher's target state) |
+| `patches/sync-patcher-blocks.py` | Regenerates the patcher's code blocks from the known-good proxy |
+| `patches/remove-plugin.sh` | Removes a MiniMax Code plugin and stops the MCP servers it leaves behind |
 
 ## Roll out
 
@@ -185,12 +189,37 @@ turn, releases it once that turn has finished, and resends it while the runtime 
 turn as busy. Duplicate and idle cancels are dropped, because the agent uses them to swallow the
 next prompt of that session.
 
+The agent also ships native ACP extension methods (`mcode/session/steer`, `mcode/session/queue/*`,
+`mcode/session/goal/*`), which T3 Code knows nothing about. The proxy uses `mcode/session/steer`
+when the client sends a message **without** cancelling: the message then joins the running turn
+instead of replacing it, and the client gets the turn's own result back. When the client cancels
+first — T3's force send — the cancel is passed straight through and the message runs as the next
+turn, because the native steer cannot interrupt a running tool call. If the agent refuses the
+steer, the proxy falls back to holding the prompt.
+
 ```bash
 ./patches/apply-mcode-acp-steer.py            # patches the deployed proxy (idempotent)
 python3 patches/apply-mcode-acp-steer.py       # same fix, works on any proxy revision
+python3 patches/sync-patcher-blocks.py         # copy the patcher's blocks from the known-good file
 python3 patches/test_mcode_acp_steer.py        # unit self-check for the patcher
 node patches/test_mcode_acp_steer.mjs          # scenario check against a live agent
+node patches/test_mcode_acp_steer_fallback.mjs # the agent refuses the steer -> fallback
+node patches/test_mcode_acp_native_steer_bridge.mjs  # the native steer is really used
+node patches/test_mcode_acp_proxy_resend.mjs   # rejection-path check, no login needed
+node patches/test_mcode_acp_native_extensions.mjs    # the native extension API
+node patches/test_mcode_acp_elicitation.mjs    # the elicitation rewrite and the chunk patch
+node patches/test_mcode_acp_goal_bridge.mjs    # the goal commands, end to end
+node patches/test_mcode_acp_goal_continuation.mjs    # the goal working on its own
+node patches/test_mcode_acp_goal_prompt_collision.mjs  # a prompt during a goal turn
+./patches/remove-plugin.sh goal-mode@local     # remove a plugin and stop its leftover servers
 ```
+
+If the agent keeps refusing the prompt, the proxy resends it with a growing backoff and gives up
+after `MCODE_RESEND_MAX_WAIT_MS` (10 minutes by default). The agent's error is then passed to the
+client and the session is released, so the turn fails visibly instead of hanging, and the next
+prompt in that session still works. The budget has to outlast a goal turn, which owns the session
+for minutes at a time.
+`test_mcode_acp_proxy_resend.mjs` drives that path against a fake agent, so it needs no login.
 
 The proxy is the same script on every machine, and machines run different revisions of it (the
 recovery handling differs between them), so the patcher edits it by shape instead of by byte offset
@@ -200,6 +229,95 @@ and stdout plumbing — because that part is identical in every revision;
 
 The running ACP process keeps the old code in memory, so **restart T3 Code or open a new thread**
 after patching — T3 spawns the ACP runtime per thread.
+
+## The system prompt is a real system prompt
+
+T3 Code sends its own instructions as the first user message, because the ACP
+wire has no system prompt field. The proxy can do better: it starts the agent
+with `--append-system-prompt-file`, so the text lands in the agent's **actual
+system prompt** rather than in a user turn.
+
+The proxy writes that file itself. It always carries the T3 orchestration
+directive, so T3 stays above mcode's own delegation:
+
+```
+[MANDATORY T3 ORCHESTRATION DIRECTIVE]
+... ALWAYS use T3 Code's orchestrator tool `delegate_task` (call it through
+mcp_invoke with tool_name "mcp__t3-code__delegate_task") ...
+```
+
+Set `MCODE_APPEND_SYSTEM_PROMPT_FILE` to a file to append more of your own.
+
+## Goals: the native API, not the plugin
+
+The `goal-mode` plugin (a local plugin with its own MCP server, its own state file and its own
+hooks) was a parallel implementation of Goal Mode. It has been removed: `mcode plugin remove
+goal-mode@local`. Goals now live in the runtime's own goal store and are reached over the ACP
+extension methods the agent advertises in `initialize._meta`:
+
+```
+mcode/session/goal/create   { sessionId, objective, tokenBudget? }
+mcode/session/goal/get      { sessionId }
+mcode/session/goal/patch    { sessionId, status?, objective?, tokenBudget? }
+mcode/session/goal/clear    { sessionId }
+```
+
+The proxy turns a `/goal ...` prompt from the client into those calls, so the goal never reaches
+the model as an ordinary turn:
+
+| Prompt | Native call |
+| --- | --- |
+| `/goal <objective>` | `goal/create` |
+| `/goal status` | `goal/get` |
+| `/goal pause` | `goal/patch` with `status: "paused"` |
+| `/goal resume` | `goal/patch` with `status: "active"` |
+| `/goal stop` | `goal/clear` |
+| `/goal edit <text>` | `goal/patch` with the new objective |
+
+The natural language the goal-mode plugin used to detect works too, so removing the plugin did
+not cost the phrasing: "set my goal to ...", "what is my current goal?", "pause my goal",
+"cancel my goal", "update my goal to ...". `/goal history` and the plan family have no native
+equivalent and stay ordinary prompts.
+
+The proxy answers the client with an `agent_message_chunk` that reports what happened, and with
+`stopReason: "end_turn"` for the prompt itself. `/goal history` has no native equivalent and is
+passed through to the model.
+
+The proxy opts in to the agent's extension notifications, so it sees `mcode/session/goal_update`
+and reports the goal state to the client ("Goal tg_xxx is now complete"). Those notifications are
+translated, never forwarded: T3 does not know these methods.
+
+The native goal has no plan field, so a plan carried over from the plugin is appended to the
+objective — the objective is what the runtime injects into every continuation turn. The plugin's
+own state (goal history, plans, criteria) is kept in `~/Workspaces/TestSpaces/goal-mode-backup/`.
+
+```bash
+node patches/test_mcode_acp_goal_bridge.mjs  # the goal commands, end to end
+node patches/test_mcode_acp_goal_phrasing.mjs   # the natural language phrasings
+node patches/migrate_goal_to_native.mjs       # carry a plugin goal over to the native store
+```
+
+## The native queue cannot own the client's prompts
+
+The agent has `mcode/session/queue/*`, and it looks like the right owner for the messages the
+proxy holds. It is not, for the path T3 uses:
+
+- a **cancelled** session has its queue **paused**, and the queued message sits there as
+  `status: "paused"` and is never dispatched;
+- a paused queue refuses every later turn: the next prompt fails with
+  `Internal error: ... The session Queue is paused`;
+- a queued turn produces **no** `session/prompt` response, so the client could not be
+  correlated with it anyway.
+
+So the proxy keeps its own queue for the client's messages. It preserves the request id, which
+means the agent's real answer still reaches the client. The native queue stays unused.
+
+## Creating a goal from the agent
+
+The runtime defines a `create_goal` tool but never wires it into the agent's tool set, and the
+version it defines would create a goal that never runs. The working creation path is the ACP
+extension the proxy uses. Details and the upstream request:
+[`patches/UPSTREAM-create-goal.md`](patches/UPSTREAM-create-goal.md).
 
 ## Known limits
 

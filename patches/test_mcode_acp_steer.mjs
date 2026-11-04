@@ -66,6 +66,9 @@ async function newSession(c) {
 }
 
 // A: the T3 force send - cancel and the steering prompt sent back to back.
+// The cancel interrupts the running turn, so the message runs as the next
+// turn: the proxy keeps this path because the agent's native steer cannot
+// interrupt a running tool call.
 async function scenarioA() {
   const c = connect();
   const sessionId = await newSession(c);
@@ -83,6 +86,8 @@ async function scenarioA() {
 }
 
 // B: a prompt arrives while a turn runs and the client sends no cancel.
+// Nothing is interrupted here, so the proxy uses the agent's native steer:
+// the message joins the running turn instead of replacing it.
 async function scenarioB() {
   const c = connect();
   const sessionId = await newSession(c);
@@ -93,7 +98,8 @@ async function scenarioB() {
   const said = c.answers.join('');
   check('B prompt answered', !steerRes.error, steerRes.error ? `${steerRes.error.code} ${steerRes.error.message}` : JSON.stringify(steerRes.result));
   check('B model followed the steering message', said.includes('STEER_B_OK'), said.slice(-80));
-  await first;
+  const firstRes = await first;
+  check('B the running turn was steered, not cancelled', firstRes.result?.stopReason === 'end_turn', JSON.stringify(firstRes.result));
   c.stop();
 }
 
