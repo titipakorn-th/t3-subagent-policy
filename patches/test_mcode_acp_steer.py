@@ -114,10 +114,13 @@ with tempfile.TemporaryDirectory() as tmp:
         else:
             print(f"skip   the migration check (no git checkout for {sha})")
 
-    # 8. A proxy carrying a patch this patcher does not know is refused.
+    # 8. A proxy carrying a patch this patcher does not know is refused: a
+    #    patched region that matches nothing has to be left alone.
     unknown = os.path.join(tmp, "unknown-patch.js")
-    broken = good.replace("const RETRYABLE_REJECTION", "const RETRYABLE_REJECTION_UNKNOWN_REVISION")
-    broken = broken.replace("const MCODE_ACP_PATCH = 2;", "")
+    current = {name: new for name, _old, new in patcher.EDITS}
+    helpers = current.get("helpers")
+    broken = good.replace(helpers, "/* a revision this patcher does not know */", 1) if helpers else good
+    broken = broken.replace("const MCODE_ACP_PATCH = 2;", "const MCODE_ACP_PATCH = 99;")
     open(unknown, "w").write(broken)
     result = run(unknown)
     check("an unknown patch revision is refused", result.returncode != 0, True)

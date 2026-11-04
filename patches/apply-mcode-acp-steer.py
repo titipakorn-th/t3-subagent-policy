@@ -798,36 +798,37 @@ def migrate(src):
     """Bring a proxy patched by an earlier revision up to date.
 
     The patched text does not depend on the baseline, so an earlier
-    revision's regions can be replaced with the current ones. Edits the
-    earlier revision did not have are applied from their baseline anchor,
-    which is still in the file.
+    revision's regions can be replaced with the current ones. Regions that
+    the earlier revision never had are still at their baseline anchor, so
+    they are applied from there.
     """
-    current = {name: new for name, _old, new in EDITS}
-    matched = None
+    older = {}
     for _sha, anchors in MIGRATION_ANCHORS.items():
-        if anchors and all(src.count(text) == 1 for _name, text in anchors):
-            matched = anchors
-            break
-    if matched is None:
-        return None, None
-
+        for name, text in anchors:
+            older.setdefault(name, []).append(text)
     out = src
     applied = []
-    done = set()
-    for name, text in matched:
-        new = current.get(name)
-        if new is None:
-            continue
-        out = out.replace(text, new, 1)
-        applied.append(name)
-        done.add(name)
     for name, old, new in EDITS:
-        if name in done:
-            continue
-        if out.count(old) == 1:
-            out = out.replace(old, new, 1)
-            applied.append(name)
-    return out, applied
+        if out.count(new) == 1:
+            continue  # this region is already at the current revision
+        # An earlier revision's text comes first: the baseline anchor is also
+        # present in a patched file, and replacing only that line would leave
+        # the earlier revision's region behind it.
+        for text in older.get(name, []):
+            if out.count(text) == 1:
+                out = out.replace(text, new, 1)
+                applied.append(name)
+                break
+        else:
+            if out.count(old) == 1:
+                out = out.replace(old, new, 1)
+                applied.append(name)
+    return (out, applied) if applied else (None, None)
+
+
+def is_current(src):
+    """True when every region of the current patch is in the file."""
+    return all(src.count(new) == 1 for _name, _old, new in EDITS)
 
 
 def main():
@@ -852,7 +853,7 @@ def main():
         print("new ACP processes pick this up; restart T3 Code or open a new thread.")
         return 0
 
-    if VERSION_MARKER in src:
+    if VERSION_MARKER in src and is_current(src):
         print(f"already patched: {TARGET}")
         return 0
 
@@ -883,7 +884,7 @@ def main():
         unknown = (
             migrated is None
             or VERSION_MARKER not in migrated
-            or any(migrated.count(new) != 1 for _name, _old, new in EDITS)
+            or not is_current(migrated)
         )
         if unknown:
             sys.exit(
