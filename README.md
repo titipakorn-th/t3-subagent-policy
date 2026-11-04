@@ -93,6 +93,7 @@ git clone <your-account>/t3-subagent-policy.git ~/t3-subagent-policy
 ```
 
 Re-run `install.sh` any time `policy.md` changes; it re-syncs the block without duplicating it.
+It also patches the mcode ACP proxy, and `--uninstall` puts the proxy back the way it was.
 
 ### B. Copy over SSH (no repo)
 
@@ -112,6 +113,10 @@ Ask the agent on that machine to run `~/t3-subagent-policy/install.sh`.
 ```bash
 ~/t3-subagent-policy/install.sh --check    # OK/MISS per file, exit 1 if missing
 ```
+
+That check covers both halves: the instruction-file policy **and** the mcode ACP proxy patch
+(the last line reports the proxy). The proxy is what makes steering, goals and the system prompt
+work in T3; without it the policy text is all a machine gets.
 
 2. T3's own default model is cheap (should be `gpt-6-luna` + `reasoningEffort=medium`):
 

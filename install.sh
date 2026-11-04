@@ -1,16 +1,28 @@
 #!/usr/bin/env bash
 # Install / check / remove the T3 subagent cost policy in the global agent
-# instruction files read by codex and Claude-family agents.
+# instruction files read by codex and Claude-family agents, and the mcode ACP
+# proxy patch that makes steering, goals and the system prompt work in T3.
 #
 #   ./install.sh            install (idempotent)
 #   ./install.sh --check    report status, exit 1 if missing
-#   ./install.sh --uninstall remove the policy block
+#   ./install.sh --uninstall remove the policy block and the proxy patch
 #   ./install.sh --print    print the policy block only
-set -euo pipefail
+set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODE="install"
+for a in "$@"; do
+  case "$a" in
+    --check|--uninstall|--print|--help|-h) MODE="${a#--}" ;;
+  esac
+done
 
-exec python3 - "$DIR" "$@" <<'PY'
+if [ "$MODE" = "help" ]; then
+  echo "usage: install.sh [--check|--uninstall|--print]"
+  exit 0
+fi
+
+python3 - "$DIR" "$@" <<'PY'
 import os, re, shutil, sys, time
 
 DIR = sys.argv[1]
@@ -122,3 +134,40 @@ if MODE == "uninstall":
 for t in TARGETS:
     print(f"{install(t):9} {t}")
 PY
+
+# --- the mcode ACP proxy patch -------------------------------------------
+# The policy text alone does not fix steering, goals or the system prompt:
+# those live in the proxy that sits between T3 Code and the mcode agent.
+PROXY="$HOME/.minimax-code/bin/mcode-acp-proxy.js"
+PATCHER="$DIR/patches/apply-mcode-acp-steer.py"
+PROXY_MARKER="RETRYABLE_REJECTION"
+
+case "$MODE" in
+  print)
+    # The policy block only.
+    exit 0
+    ;;
+  check)
+    if [ -f "$PROXY" ] && grep -q "$PROXY_MARKER" "$PROXY"; then
+      echo "OK   $PROXY (patched)"
+    else
+      echo "MISS $PROXY (not patched)"
+      exit 1
+    fi
+    exit 0
+    ;;
+  uninstall)
+    if [ -f "$PROXY" ] && [ -f "$PATCHER" ]; then
+      python3 "$PATCHER" "$PROXY" --revert || true
+    else
+      echo "skipped  $PROXY (missing)"
+    fi
+    exit 0
+    ;;
+esac
+
+if [ -f "$PROXY" ] && [ -f "$PATCHER" ]; then
+  python3 "$PATCHER" "$PROXY" || true
+else
+  echo "skipped  $PROXY (missing)"
+fi

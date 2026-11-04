@@ -690,11 +690,36 @@ def patch(src):
     return src, None
 
 
+def revert(src):
+    """Return the unpatched source, or None when the file is not patched."""
+    for name, old, new in reversed(EDITS):
+        if src.count(new) != 1:
+            return None, f"edit {name!r} found {src.count(new)} times"
+        src = src.replace(new, old, 1)
+    return src, None
+
+
 def main():
     if not os.path.exists(TARGET):
         sys.exit(f"not found: {TARGET}")
 
     src = open(TARGET).read()
+
+    if "--revert" in sys.argv[2:]:
+        reverted, error = revert(src)
+        if reverted is None:
+            print(f"not a patched proxy ({error}): {TARGET}")
+            return 0
+        backup = f"{TARGET}.bak-{time.strftime('%Y%m%dT%H%M%S')}"
+        shutil.copy2(TARGET, backup)
+        open(TARGET, "w").write(reverted)
+        check = subprocess.run(["node", "--check", TARGET], capture_output=True, text=True)
+        if check.returncode != 0:
+            shutil.copy2(backup, TARGET)
+            sys.exit(f"reverted file does not parse; restored backup: {check.stderr.strip()}")
+        print(f"reverted: {TARGET} (backup: {backup})")
+        print("new ACP processes pick this up; restart T3 Code or open a new thread.")
+        return 0
 
     if MARKER in src:
         print(f"already patched: {TARGET}")

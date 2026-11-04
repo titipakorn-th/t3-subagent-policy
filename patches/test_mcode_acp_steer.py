@@ -84,4 +84,17 @@ with tempfile.TemporaryDirectory() as tmp:
     check("legacy revision keeps its own code", "legacyMarker" in open(legacy).read(), True)
     check("legacy revision got the fix", "RETRYABLE_REJECTION" in open(legacy).read(), True)
 
+    # 6. The patch can be undone, so a machine can go back to the stock proxy.
+    open(target, "w").write(good)
+    result = subprocess.run(
+        [sys.executable, PATCHER, target, "--revert"], capture_output=True, text=True
+    )
+    check("revert exits 0", result.returncode, 0)
+    check("revert reports it", "reverted:" in result.stdout, True)
+    check("revert restores the baseline", open(target).read() == baseline, True)
+    result = subprocess.run(
+        [sys.executable, PATCHER, target, "--revert"], capture_output=True, text=True
+    )
+    check("reverting twice is a no-op", result.returncode == 0 and "not a patched proxy" in result.stdout, True)
+
 print("\nall checks passed")
