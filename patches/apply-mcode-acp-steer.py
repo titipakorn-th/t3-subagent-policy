@@ -795,23 +795,39 @@ def revert(src):
 
 
 def migrate(src):
-    """Replace an older patch's text with the current text.
+    """Bring a proxy patched by an earlier revision up to date.
 
-    The patched text does not depend on the baseline, so a proxy patched by
-    any earlier revision of this patcher can be brought up to date.
+    The patched text does not depend on the baseline, so an earlier
+    revision's regions can be replaced with the current ones. Edits the
+    earlier revision did not have are applied from their baseline anchor,
+    which is still in the file.
     """
     current = {name: new for name, _old, new in EDITS}
-    for sha, anchors in MIGRATION_ANCHORS.items():
-        if not anchors or not all(src.count(text) == 1 for _name, text in anchors):
+    matched = None
+    for _sha, anchors in MIGRATION_ANCHORS.items():
+        if anchors and all(src.count(text) == 1 for _name, text in anchors):
+            matched = anchors
+            break
+    if matched is None:
+        return None, None
+
+    out = src
+    applied = []
+    done = set()
+    for name, text in matched:
+        new = current.get(name)
+        if new is None:
             continue
-        out = src
-        for name, text in anchors:
-            new = current.get(name)
-            if new is None:
-                continue
-            out = out.replace(text, new, 1)
-        return out, sha
-    return None, None
+        out = out.replace(text, new, 1)
+        applied.append(name)
+        done.add(name)
+    for name, old, new in EDITS:
+        if name in done:
+            continue
+        if out.count(old) == 1:
+            out = out.replace(old, new, 1)
+            applied.append(name)
+    return out, applied
 
 
 def main():
@@ -863,8 +879,13 @@ def main():
 
     if MARKER in src:
         # An older revision of this patch: bring it up to date.
-        migrated, sha = migrate(src)
-        if migrated is None:
+        migrated, applied = migrate(src)
+        unknown = (
+            migrated is None
+            or VERSION_MARKER not in migrated
+            or any(migrated.count(new) != 1 for _name, _old, new in EDITS)
+        )
+        if unknown:
             sys.exit(
                 f"the proxy carries a patch revision this patcher does not know "
                 f"({digest}); update the patcher instead of working around it"
@@ -876,7 +897,8 @@ def main():
         if check.returncode != 0:
             shutil.copy2(backup, TARGET)
             sys.exit(f"migrated file does not parse; restored backup: {check.stderr.strip()}")
-        print(f"migrated an older patch ({sha}) to the current revision: {TARGET}")
+        print(f"migrated an older patch to the current revision: {TARGET}")
+        print(f"updated: {', '.join(applied)}")
         print(f"backup: {backup}")
         print("new ACP processes pick this up; restart T3 Code or open a new thread.")
         return 0

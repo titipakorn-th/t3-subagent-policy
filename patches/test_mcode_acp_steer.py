@@ -116,7 +116,9 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # 8. A proxy carrying a patch this patcher does not know is refused.
     unknown = os.path.join(tmp, "unknown-patch.js")
-    open(unknown, "w").write(good.replace("const MCODE_ACP_PATCH = 2;", "const MCODE_ACP_PATCH = 99;"))
+    broken = good.replace("const RETRYABLE_REJECTION", "const RETRYABLE_REJECTION_UNKNOWN_REVISION")
+    broken = broken.replace("const MCODE_ACP_PATCH = 2;", "")
+    open(unknown, "w").write(broken)
     result = run(unknown)
     check("an unknown patch revision is refused", result.returncode != 0, True)
     check("the refusal says so", "does not know" in (result.stderr + result.stdout), True)

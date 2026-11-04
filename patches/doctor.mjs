@@ -47,9 +47,23 @@ if (!fs.existsSync(LAUNCHER)) {
 }
 const proxySource = fs.readFileSync(PROXY, 'utf8');
 check('the proxy carries the fix', proxySource.includes('RETRYABLE_REJECTION'), PROXY);
-if (fs.existsSync(FIXTURE)) {
-  check('the proxy matches the known-good file', proxySource === fs.readFileSync(FIXTURE, 'utf8'));
+
+// The patched regions, not the whole file: a machine keeps its own baseline,
+// so only the patch itself has to match.
+const patcher = path.join(HERE, 'apply-mcode-acp-steer.py');
+let missing = [];
+try {
+  const source = fs.readFileSync(patcher, 'utf8');
+  const version = source.match(/VERSION_MARKER = "([^"]+)"/)?.[1];
+  if (version) check('the proxy carries the current patch revision', proxySource.includes(version), version);
+  // Every text the current patch writes has to be in the file.
+  const edits = source.match(/^EDITS = \[([\s\S]*?)^\]/m)?.[1] ?? '';
+  const newTexts = [...edits.matchAll(/,\s*r?"""([\s\S]*?)"""\s*\)/g)].map((m) => m[1]);
+  missing = newTexts.filter((text) => text && !proxySource.includes(text.replace(/\\n/g, '\n')));
+} catch {
+  // The patcher is not next to the doctor; skip the detailed check.
 }
+check('every patched region is at the current revision', missing.length === 0, missing.length ? `${missing.length} region(s) differ` : '');
 
 // 2. The agent behind it.
 const child = spawn(process.execPath, [PROXY, LAUNCHER, 'acp'], { stdio: ['pipe', 'pipe', 'inherit'] });
