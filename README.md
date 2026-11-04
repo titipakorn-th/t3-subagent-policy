@@ -292,12 +292,17 @@ The proxy opts in to the agent's extension notifications, so it sees `mcode/sess
 and reports the goal state to the client ("Goal tg_xxx is now complete"). Those notifications are
 translated, never forwarded: T3 does not know these methods.
 
+The agent has no goal slash command, so the proxy advertises one: `/goal` shows up in the
+client's command list and in the session result, with the description
+"Set an autonomous goal loop (works systematically until the goal is achieved)".
+
 The native goal has no plan field, so a plan carried over from the plugin is appended to the
 objective — the objective is what the runtime injects into every continuation turn. The plugin's
 own state (goal history, plans, criteria) is kept in `~/Workspaces/TestSpaces/goal-mode-backup/`.
 
 ```bash
 node patches/test_mcode_acp_goal_bridge.mjs  # the goal commands, end to end
+node patches/test_mcode_acp_goal_command.mjs  # the goal command is advertised to the client
 node patches/test_mcode_acp_goal_phrasing.mjs   # the natural language phrasings
 node patches/migrate_goal_to_native.mjs       # carry a plugin goal over to the native store
 ```

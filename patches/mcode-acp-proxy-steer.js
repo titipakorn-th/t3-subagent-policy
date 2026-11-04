@@ -26,6 +26,7 @@ const proxyRequests = new Map(); // proxy request id -> { sessionId, pending }
 const pendingSteers = new Map(); // sessionId -> steer attempt waiting for the agent's answer
 const steeringSessions = new Map(); // sessionId -> client request id waiting for the steered turn
 const goalStates = new Map(); // sessionId -> { goalId, status }
+const newSessionRequests = new Set(); // request ids of session/new calls
 const RETRYABLE_REJECTION = /already has an active turn|prompt is already active/i;
 // A goal turn or a long tool call can hold the session for minutes, so a
 // rejected prompt is retried until it is accepted or the budget runs out.
@@ -194,6 +195,46 @@ function queueLocally(sessionId, message) {
   }, HOLD_TIMEOUT_MS);
   if (typeof timer.unref === 'function') timer.unref();
   holdTimers.set(sessionId, timer);
+}
+
+// The agent has no goal slash command, so the proxy advertises one to the
+// client: without it the goal control is invisible in the composer.
+const GOAL_COMMAND = {
+  name: 'goal',
+  description: 'Set an autonomous goal loop (works systematically until the goal is achieved).',
+};
+
+function addGoalCommand(line) {
+  const msg = parseMessage(line);
+  if (!msg) return line;
+  let changed = false;
+  const add = (list) => {
+    if (!Array.isArray(list)) return;
+    if (list.some((command) => command && command.name === GOAL_COMMAND.name)) return;
+    list.push({ ...GOAL_COMMAND });
+    changed = true;
+  };
+  if (msg.result) {
+    add(msg.result.slashCommands);
+    // The agent sends no command list in the session result, so the client
+    // would never see the goal command outside the notification.
+    if (newSessionRequests.has(idKey(msg.id))) {
+      if (!Array.isArray(msg.result.slashCommands)) {
+        msg.result.slashCommands = [];
+        changed = true;
+      }
+      add(msg.result.slashCommands);
+      newSessionRequests.delete(idKey(msg.id));
+    }
+  }
+  if (msg.method === 'session/update') {
+    const update = msg.params?.update;
+    if (update) {
+      add(update.availableCommands);
+      add(update.available_commands);
+    }
+  }
+  return changed ? JSON.stringify(msg) : line;
 }
 
 // Decide what to do with a message the client sent: drop it, hold it, steer
@@ -709,6 +750,9 @@ function interceptIncoming(line) {
       };
       return JSON.stringify(msg);
     }
+    if (msg && msg.method === 'session/new' && msg.id !== undefined && msg.id !== null) {
+      newSessionRequests.add(idKey(msg.id));
+    }
     if (msg && msg.method === 'session/prompt' && msg.params && msg.id !== undefined && msg.id !== null && typeof msg.params.sessionId === 'string') {
       cancelledSessions.delete(msg.params.sessionId);
       pendingPrompts.set(idKey(msg.id), { id: msg.id, sessionId: msg.params.sessionId });
@@ -816,7 +860,7 @@ function startProxy(targetLauncher, targetArgs) {
       return;
     }
     noteNativeExtensions(line);
-    const outgoing = interceptOutgoing(line);
+    const outgoing = interceptOutgoing(addGoalCommand(line));
     if (outgoing !== null) {
       process.stdout.write(outgoing + '\n');
       const relay = relaySteeringResponse(line);
