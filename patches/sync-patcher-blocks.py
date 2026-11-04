@@ -15,9 +15,12 @@ Run it after editing mcode-acp-proxy-steer.js, then run test_mcode_acp_steer.py
 to confirm the patcher and the known-good file still agree.
 """
 import hashlib
+import json
 import os
 import re
 import subprocess
+import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "mcode-acp-proxy-steer.js")
@@ -97,6 +100,52 @@ def older_revisions():
     return table
 
 
+def older_patchers():
+    """The anchors of every earlier revision of the patcher itself.
+
+    A machine patched by an earlier revision carries that revision's text.
+    Replacing those texts with the current ones migrates the file, whatever
+    baseline it was patched from.
+    """
+    try:
+        revisions = subprocess.run(
+            ["git", "log", "--format=%H", "--", "patches/apply-mcode-acp-steer.py"],
+            cwd=os.path.dirname(HERE), capture_output=True, text=True, check=True,
+        ).stdout.split()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {}
+    table = {}
+    for sha in revisions:
+        blob = subprocess.run(
+            ["git", "show", f"{sha}:patches/apply-mcode-acp-steer.py"],
+            cwd=os.path.dirname(HERE), capture_output=True, text=True,
+        )
+        if blob.returncode != 0:
+            continue
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+            handle.write(blob.stdout)
+            old_patcher = handle.name
+        edits = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util,json,sys\n"
+             "spec=importlib.util.spec_from_file_location('old',sys.argv[1])\n"
+             "m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+             "print(json.dumps([[n,new] for n,o,new in m.EDITS]))\n",
+             old_patcher],
+            capture_output=True, text=True,
+        )
+        os.unlink(old_patcher)
+        if edits.returncode != 0:
+            continue
+        try:
+            anchors = json.loads(edits.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            continue
+        if anchors:
+            table[sha[:12]] = anchors
+    return table
+
+
 for name, (start, end) in BLOCKS.items():
     # One trailing newline: the baseline keeps its own blank lines after the
     # replaced region, so the block must not add one of its own.
@@ -139,6 +188,16 @@ patcher = re.sub(r"^KNOWN_OLD_REVISIONS = \{.*?^\}\n", table, patcher, flags=re.
 if "KNOWN_OLD_REVISIONS = {" not in patcher:
     patcher = patcher.replace("EDITS = [", table + "\nEDITS = [", 1)
 
+# The anchors of the older patchers, so the patcher can migrate them.
+patchers = older_patchers()
+anchors = "MIGRATION_ANCHORS = {\n" + "".join(
+    f'    "{sha}": {items!r},\n' for sha, items in sorted(patchers.items())
+) + "}\n"
+patcher = re.sub(r"^MIGRATION_ANCHORS = \{.*?^\}\n", anchors, patcher, flags=re.S | re.M)
+if "MIGRATION_ANCHORS = {" not in patcher:
+    patcher = patcher.replace("EDITS = [", anchors + "\nEDITS = [", 1)
+
 open(PATCHER, "w").write(patcher)
 print("patcher blocks regenerated from", os.path.basename(FIXTURE))
 print(f"known older patch revisions: {len(revisions)}")
+print(f"known older patchers: {len(patchers)}")

@@ -121,4 +121,21 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an unknown patch revision is refused", result.returncode != 0, True)
     check("the refusal says so", "does not know" in (result.stderr + result.stdout), True)
 
+    # 9. A proxy carrying an earlier revision's text is migrated, whatever
+    #    baseline it was patched from: the patched text does not depend on it.
+    current = {name: new for name, _old, new in patcher.EDITS}
+    for sha, anchors in sorted(patcher.MIGRATION_ANCHORS.items()):
+        older = good
+        for name, text in anchors:
+            if name in current and older.count(current[name]) == 1:
+                older = older.replace(current[name], text, 1)
+        if older == good:
+            continue
+        target2 = os.path.join(tmp, "older-patch.js")
+        open(target2, "w").write(older)
+        result = run(target2)
+        check(f"an earlier patch ({sha}) is migrated", result.returncode == 0, True)
+        check("the migration reached the current revision", open(target2).read() == good, True)
+        break
+
 print("\nall checks passed")
