@@ -12,9 +12,22 @@ import path from 'node:path';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
-const LAUNCHER = process.argv[3] || '/Users/prince/.minimax-code/releases/0.7.4/.mcode-launcher';
 const FIXTURE = path.join(HERE, 'mcode-acp-proxy-steer.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The release the launcher runs comes from ~/.minimax-code/current, so the
+// doctor works on any machine and after an mcode upgrade.
+function defaultLauncher() {
+  const root = path.dirname(path.dirname(PROXY));
+  try {
+    const release = fs.readFileSync(path.join(root, 'current'), 'utf8').trim();
+    return path.join(root, 'releases', release, '.mcode-launcher');
+  } catch {
+    return '';
+  }
+}
+
+const LAUNCHER = process.argv[3] || process.env.MCODE_LAUNCHER || defaultLauncher();
 
 let failures = 0;
 function check(label, ok, detail) {
@@ -25,6 +38,10 @@ function check(label, ok, detail) {
 // 1. The installed proxy.
 if (!fs.existsSync(PROXY)) {
   check('the proxy exists', false, PROXY);
+  process.exit(1);
+}
+if (!fs.existsSync(LAUNCHER)) {
+  check('the agent launcher exists', false, LAUNCHER);
   process.exit(1);
 }
 const proxySource = fs.readFileSync(PROXY, 'utf8');
