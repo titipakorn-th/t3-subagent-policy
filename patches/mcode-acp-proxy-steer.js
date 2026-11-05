@@ -45,6 +45,8 @@ const STEER_RELAY_TIMEOUT_MS = 300000;
 // Both are per goal run: a new goal gets a new budget.
 const GOAL_MAX_TURNS = Number(process.env.MCODE_GOAL_MAX_TURNS || 10);
 const GOAL_MAX_MS = Number(process.env.MCODE_GOAL_MAX_MS || 300000);
+// A goal may ask for more room: the longest budget a command can ask for.
+const GOAL_BUDGET_MAX_MS = Number(process.env.MCODE_GOAL_BUDGET_MAX_MS || 86400000);
 // The agent ends a finished goal with this line.
 const GOAL_DONE_MARKER = 'GOAL_COMPLETE';
 let proxySequence = 0;
@@ -474,14 +476,56 @@ function answerGoalCommand(sessionId, clientRequestId, text) {
   writeClientMessage({ jsonrpc: '2.0', id: clientRequestId, result: { stopReason: 'end_turn' } });
 }
 
+// The budget a goal command asks for.
+//
+// Two ways to ask: "--budget 2h", or a clause that says how long the goal may
+// run ("..., you got 2 hours to execute"). The clause needs a budget word in
+// it, so an objective that merely mentions a duration ("fix the 2 hours
+// timeout bug") keeps the default budget.
+const BUDGET_UNITS = {
+  h: 3600000, hr: 3600000, hrs: 3600000, hour: 3600000, hours: 3600000,
+  m: 60000, min: 60000, mins: 60000, minute: 60000, minutes: 60000,
+  s: 1000, sec: 1000, secs: 1000, second: 1000, seconds: 1000,
+};
+const BUDGET_WORDS = /\b(budget|got|have|allowed|allow|within|up to|limit)\b/i;
+
+function budgetMsOf(text) {
+  const m = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/i.exec(String(text).trim());
+  if (!m) return null;
+  const unit = BUDGET_UNITS[m[2].toLowerCase()];
+  if (!unit) return null;
+  const ms = Number(m[1]) * unit;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.min(ms, GOAL_BUDGET_MAX_MS);
+}
+
+function parseGoalBudget(text) {
+  let objective = String(text || '');
+  let budget = null;
+  const flag = /^\s*--budget\s+(\S+)\s*/i.exec(objective);
+  if (flag) {
+    budget = budgetMsOf(flag[1]);
+    if (budget !== null) objective = objective.slice(flag[0].length);
+  }
+  if (budget === null) {
+    const clause = objective.split(/[,;]\s*/).pop() || '';
+    if (BUDGET_WORDS.test(clause)) {
+      const m = /(\d+(?:\.\d+)?)\s*([a-z]+)/i.exec(clause);
+      budget = m ? budgetMsOf(m[1] + m[2]) : null;
+    }
+  }
+  return { budget, objective: objective.trim() };
+}
+
 // The client asked for a goal: start the run and keep its request open.
-function startGoalRun(sessionId, clientRequestId, objective) {
+function startGoalRun(sessionId, clientRequestId, objective, budgetMs) {
   const previous = goalRuns.get(sessionId);
   if (previous) {
     previous.status = 'stopped';
     clearGoalTimer(previous);
     answerGoalRun(previous, 'The goal was replaced by a new one.');
   }
+  const budget = budgetMs === null || budgetMs === undefined ? GOAL_MAX_MS : budgetMs;
   const run = {
     sessionId,
     clientRequestId,
@@ -490,7 +534,11 @@ function startGoalRun(sessionId, clientRequestId, objective) {
     turns: 0,
     text: '',
     startedAt: Date.now(),
-    deadline: Date.now() + GOAL_MAX_MS,
+    budget,
+    // The turn cap follows the budget: two minutes a turn, and never fewer
+    // turns than the default.
+    maxTurns: Math.max(GOAL_MAX_TURNS, Math.ceil(budget / 120000)),
+    deadline: Date.now() + budget,
     timer: null,
     reason: null,
   };
@@ -534,9 +582,9 @@ function handleGoalTurnEnd(run, msg, line) {
     answerGoalRun(run, `Goal met after ${run.turns} turn(s).`);
     return;
   }
-  if (run.turns >= GOAL_MAX_TURNS) {
+  if (run.turns >= run.maxTurns) {
     run.status = 'stopped';
-    run.reason = `the turn budget of ${GOAL_MAX_TURNS} turns ran out`;
+    run.reason = `the turn budget of ${run.maxTurns} turns ran out`;
     clearGoalTimer(run);
     answerGoalRun(run, `Goal stopped after ${run.turns} turn(s) without being met: ${run.reason}.`);
     return;
@@ -570,7 +618,8 @@ function handleGoalCommand(command, message) {
   const clientRequestId = msg.id;
   const run = goalRuns.get(sessionId);
   if (command.kind === 'create') {
-    startGoalRun(sessionId, clientRequestId, command.argument);
+    const { budget, objective } = parseGoalBudget(command.argument);
+    startGoalRun(sessionId, clientRequestId, objective, budget);
     return;
   }
   if (run) {
@@ -594,7 +643,7 @@ function handleGoalCommand(command, message) {
       // A resumed goal gets a fresh budget window: the budget covers the time
       // the goal actually works, not the time it waited.
       run.startedAt = Date.now();
-      run.deadline = Date.now() + GOAL_MAX_MS;
+      run.deadline = Date.now() + run.budget;
       run.clientRequestId = clientRequestId;
       sendGoalTurn(run, false);
       return;
@@ -613,7 +662,8 @@ function handleGoalCommand(command, message) {
     }
     if (command.kind === 'get') {
       const minutes = Math.round((Date.now() - run.startedAt) / 60000);
-      answerGoalCommand(sessionId, clientRequestId, `The goal is ${run.status}. Turns ${run.turns}, ${minutes} min.\n${run.objective}`);
+      const budget = run.budget % 3600000 === 0 ? `${run.budget / 3600000} h` : `${Math.round(run.budget / 60000)} min`;
+      answerGoalCommand(sessionId, clientRequestId, `The goal is ${run.status}. Turns ${run.turns}, ${minutes} min of a ${budget} budget.\n${run.objective}`);
       return;
     }
   }

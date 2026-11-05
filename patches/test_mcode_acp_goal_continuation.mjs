@@ -23,7 +23,7 @@ function check(label, ok, detail) {
 }
 
 // Run a goal against the fake agent and report what the client saw.
-async function runGoal(agentTurns, env, style) {
+async function runGoal(agentTurns, env, style, waitMs, goalText) {
   const callsFile = path.join(os.tmpdir(), `fake-agent-calls-${process.pid}-${agentTurns}-${style || 'marker'}.json`);
   const args = [PROXY, process.execPath, AGENT, 'goal', String(agentTurns)];
   if (style) args.push(style);
@@ -58,10 +58,15 @@ async function runGoal(agentTurns, env, style) {
   await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
   const created = await request('session/new', { cwd: process.cwd(), mcpServers: [] });
   const sessionId = created.result.sessionId;
-  const goal = await request('session/prompt', {
+  const prompt = goalText || '/goal Finish the work.';
+  const answered = request('session/prompt', {
     sessionId,
-    prompt: [{ type: 'text', text: '/goal Finish the work.' }],
+    prompt: [{ type: 'text', text: prompt }],
   });
+  // A goal that is still running never answers: waitMs then gives up on it.
+  const goal = waitMs
+    ? await Promise.race([answered, new Promise((resolve) => setTimeout(() => resolve(null), waitMs))])
+    : await answered;
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const calls = JSON.parse(fs.readFileSync(callsFile, 'utf8'));
@@ -97,6 +102,20 @@ const slow = await runGoal(50, { MCODE_GOAL_MAX_MS: '2000' }, 'slow');
 check('the slow goal was answered', !slow.goal.error && slow.goal.result?.stopReason === 'end_turn', JSON.stringify(slow.goal.result ?? slow.goal.error));
 check('the time budget cut the turn off', /time budget ran out/.test(slow.said), slow.said.slice(-160));
 check('the agent was cancelled', slow.calls.includes('session/cancel'), slow.calls.join(','));
+
+// 5. A goal that asks for more room gets it, whatever the default is.
+const asked = await runGoal(50, { MCODE_GOAL_MAX_MS: '2000' }, 'slow', 5000, '/goal Finish the work, you got 10 minutes to execute');
+check('the goal asked for a longer budget', asked.goal === null, JSON.stringify(asked.goal));
+check('the default budget did not cut it off', !/time budget ran out/.test(asked.said), asked.said.slice(-160));
+
+// 6. A goal that asks for less room gets that.
+const short = await runGoal(50, { MCODE_GOAL_MAX_MS: '600000' }, 'slow', 8000, '/goal Finish the work, you got 2 seconds to execute');
+check('the goal asked for a shorter budget', short.goal !== null, JSON.stringify(short.goal));
+check('the asked budget cut the turn off', /time budget ran out/.test(short.said), short.said.slice(-160));
+
+// 7. An objective that only mentions a duration keeps the default budget.
+const mention = await runGoal(50, { MCODE_GOAL_MAX_MS: '600000' }, 'slow', 4000, '/goal Fix the 2 hours timeout bug in the parser.');
+check('a duration in the objective is not a budget', mention.goal === null, JSON.stringify(mention.goal));
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
