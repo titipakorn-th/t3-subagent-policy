@@ -29,6 +29,7 @@ touch a file it does not recognise.
 
     python3 apply-mcode-acp-steer.py [path-to-mcode-acp-proxy.js]
 """
+import glob
 import hashlib
 import os
 import shutil
@@ -41,6 +42,38 @@ TARGET = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
 
 MARKER = "RETRYABLE_REJECTION"
 VERSION_MARKER = "const MCODE_ACP_PATCH = 2;"
+
+
+def node_binary():
+    """The node to check the patched proxy with.
+
+    A machine without a system node still has the one the mcode runtime ships,
+    so use that rather than failing.
+    """
+    found = os.environ.get("MCODE_NODE")
+    if found and os.path.exists(found):
+        return found
+    if shutil.which("node"):
+        return "node"
+    runtime = os.path.expanduser("~/.minimax-code/runtime")
+    for candidate in sorted(glob.glob(os.path.join(runtime, "node-*"))):
+        path = os.path.join(candidate, "bin", "node")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def check_syntax(target):
+    """True when the file parses. No node means no check, not a failure."""
+    node = node_binary()
+    if node is None:
+        print("note: no node on this machine; the patched file was not syntax checked")
+        return True
+    check = subprocess.run([node, "--check", target], capture_output=True, text=True)
+    if check.returncode != 0:
+        print(f"patched file does not parse: {check.stderr.strip()}")
+        return False
+    return True
 
 STATE_OLD = """const cancelledSessions = new Set();
 """
@@ -865,8 +898,7 @@ def main():
         backup = f"{TARGET}.bak-{time.strftime('%Y%m%dT%H%M%S')}"
         shutil.copy2(TARGET, backup)
         open(TARGET, "w").write(reverted)
-        check = subprocess.run(["node", "--check", TARGET], capture_output=True, text=True)
-        if check.returncode != 0:
+        if not check_syntax(TARGET):
             shutil.copy2(backup, TARGET)
             sys.exit(f"reverted file does not parse; restored backup: {check.stderr.strip()}")
         print(f"reverted: {TARGET} (backup: {backup})")
@@ -889,8 +921,7 @@ def main():
         backup = f"{TARGET}.bak-{time.strftime('%Y%m%dT%H%M%S')}"
         shutil.copy2(TARGET, backup)
         open(TARGET, "w").write(replacement)
-        check = subprocess.run(["node", "--check", TARGET], capture_output=True, text=True)
-        if check.returncode != 0:
+        if not check_syntax(TARGET):
             shutil.copy2(backup, TARGET)
             sys.exit(f"replacement does not parse; restored backup: {check.stderr.strip()}")
         print(f"migrated an older patch ({KNOWN_OLD_REVISIONS[digest]}) to the current revision: {TARGET}")
@@ -914,8 +945,7 @@ def main():
         backup = f"{TARGET}.bak-{time.strftime('%Y%m%dT%H%M%S')}"
         shutil.copy2(TARGET, backup)
         open(TARGET, "w").write(migrated)
-        check = subprocess.run(["node", "--check", TARGET], capture_output=True, text=True)
-        if check.returncode != 0:
+        if not check_syntax(TARGET):
             shutil.copy2(backup, TARGET)
             sys.exit(f"migrated file does not parse; restored backup: {check.stderr.strip()}")
         print(f"migrated an older patch to the current revision: {TARGET}")
@@ -932,8 +962,7 @@ def main():
     shutil.copy2(TARGET, backup)
     open(TARGET, "w").write(patched)
 
-    check = subprocess.run(["node", "--check", TARGET], capture_output=True, text=True)
-    if check.returncode != 0:
+    if not check_syntax(TARGET):
         shutil.copy2(backup, TARGET)
         sys.exit(f"patched file does not parse; restored backup: {check.stderr.strip()}")
 
