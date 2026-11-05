@@ -29,6 +29,7 @@ const proxyRequests = new Map(); // proxy request id -> { sessionId, pending }
 const pendingSteers = new Map(); // sessionId -> steer attempt waiting for the agent's answer
 const steeringSessions = new Map(); // sessionId -> client request id waiting for the steered turn
 const goalStates = new Map(); // sessionId -> { goalId, status }
+const goalRuns = new Map(); // sessionId -> the goal the user set in this session
 const newSessionRequests = new Set(); // request ids of session/new calls
 const RETRYABLE_REJECTION = /already has an active turn|prompt is already active/i;
 // A goal turn or a long tool call can hold the session for minutes, so a
@@ -39,6 +40,13 @@ const RESEND_MAX_DELAY_MS = 2000;
 const HOLD_TIMEOUT_MS = 30000;
 const STEER_TIMEOUT_MS = 15000;
 const STEER_RELAY_TIMEOUT_MS = 300000;
+// A goal runs as ordinary prompt turns, so it needs a cap of its own: the
+// turn count stops it, the time cap stops a single long turn from running
+// for hours.
+const GOAL_MAX_TURNS = Number(process.env.MCODE_GOAL_MAX_TURNS || 20);
+const GOAL_MAX_MS = Number(process.env.MCODE_GOAL_MAX_MS || 7200000);
+// The agent ends a finished goal with this line.
+const GOAL_DONE_MARKER = 'GOAL_COMPLETE';
 let proxySequence = 0;
 const maxRecoveryAttempts = { gateway: 2, tpm: 3 };
 const recoveryPolicies = {
@@ -363,27 +371,196 @@ function parseGoalCommand(message) {
   return null;
 }
 
-// A goal keeps working after the turn that created it ends, and the ACP client
-// only sees the turn it asked for. The cap is what stops that from running
-// forever unseen.
-const GOAL_TOKEN_BUDGET = 900000;
+// A goal the user set in this session.
+//
+// The agent's native goal API cannot be used for this: mcode runs a goal's
+// turns in a child session and never projects them to the client, so the work
+// would be invisible in T3 and could burn tokens for hours. The proxy runs the
+// goal as ordinary prompt turns instead and keeps the client's request open,
+// so every turn the agent makes reaches the thread while it happens.
 
-// Run a goal command against the agent's native goal API and answer the client.
+// The prompt that starts or continues a goal.
+function goalRunPrompt(run, first) {
+  if (first) {
+    return `${run.objective}\n\nThis is an autonomous goal: work on it systematically until it is met. When the objective is fully met, end your reply with the line ${GOAL_DONE_MARKER}.`;
+  }
+  return `Continue working on this goal:\n${run.objective}\n\nReport briefly what is done and what is left. If the objective is already met, reply with the line ${GOAL_DONE_MARKER} and nothing else.`;
+}
+
+// Send the next turn of a running goal.
+function sendGoalTurn(run, first) {
+  run.turns += 1;
+  run.text = '';
+  const id = `mcode-acp-goal-${process.pid}-${++proxySequence}`;
+  proxyRequests.set(idKey(id), { kind: 'goal-run', run });
+  writeChildMessage({
+    jsonrpc: '2.0',
+    id,
+    method: 'session/prompt',
+    params: { sessionId: run.sessionId, prompt: [{ type: 'text', text: goalRunPrompt(run, first) }] },
+  });
+}
+
+// A native goal for this session would do the same work, invisibly.
+function clearNativeGoal(sessionId) {
+  if (!nativeMethods.has('mcode/session/goal/clear')) return;
+  sendProxyRequest('mcode/session/goal/clear', { sessionId }, { kind: 'native' });
+}
+
+// Answer the request the goal is holding, and say what happened.
+function answerGoalRun(run, summary) {
+  const clientRequestId = run.clientRequestId;
+  run.clientRequestId = null;
+  if (clientRequestId === null || clientRequestId === undefined) return;
+  pendingPrompts.delete(idKey(clientRequestId));
+  writeClientMessage({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId: run.sessionId,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: summary } },
+    },
+  });
+  writeClientMessage({ jsonrpc: '2.0', id: clientRequestId, result: { stopReason: 'end_turn' } });
+}
+
+// Answer a goal command that is not part of a running goal.
+function answerGoalCommand(sessionId, clientRequestId, text) {
+  pendingPrompts.delete(idKey(clientRequestId));
+  writeClientMessage({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId,
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+    },
+  });
+  writeClientMessage({ jsonrpc: '2.0', id: clientRequestId, result: { stopReason: 'end_turn' } });
+}
+
+// The client asked for a goal: start the run and keep its request open.
+function startGoalRun(sessionId, clientRequestId, objective) {
+  const previous = goalRuns.get(sessionId);
+  if (previous) {
+    previous.status = 'stopped';
+    answerGoalRun(previous, 'The goal was replaced by a new one.');
+  }
+  const run = {
+    sessionId,
+    clientRequestId,
+    objective: String(objective || '').trim(),
+    status: 'running',
+    turns: 0,
+    text: '',
+    startedAt: Date.now(),
+  };
+  goalRuns.set(sessionId, run);
+  clearNativeGoal(sessionId);
+  sendGoalTurn(run, true);
+}
+
+// The turn of a running goal ended: continue the goal, or finish it.
+function handleGoalTurnEnd(run, msg, line) {
+  // A steered client request is answered by the turn that carried it.
+  const relay = relaySteeringResponse(line);
+  if (relay !== null) process.stdout.write(relay + '\n');
+  releaseUpstreamPrompt(line);
+  if (msg.error) {
+    run.status = 'failed';
+    answerGoalRun(run, `The goal turn failed: ${msg.error?.message || msg.error?.code}`);
+    return;
+  }
+  if (run.status !== 'running') {
+    answerGoalRun(run, `Goal ${run.status}.`);
+    return;
+  }
+  if (/goal[_ ]complete/i.test(run.text)) {
+    run.status = 'met';
+    answerGoalRun(run, `Goal met after ${run.turns} turn(s).`);
+    return;
+  }
+  if (run.turns >= GOAL_MAX_TURNS || Date.now() - run.startedAt >= GOAL_MAX_MS) {
+    run.status = 'stopped';
+    answerGoalRun(run, `Goal stopped after ${run.turns} turn(s) without being met.`);
+    return;
+  }
+  sendGoalTurn(run, false);
+}
+
+// The text the agent produced during the running goal turn.
+function accumulateGoalText(line) {
+  const msg = parseMessage(line);
+  if (!msg || msg.method !== 'session/update') return;
+  const update = msg.params?.update;
+  if (update?.sessionUpdate !== 'agent_message_chunk') return;
+  const run = goalRuns.get(msg.params?.sessionId);
+  if (!run || run.status !== 'running') return;
+  if (typeof update.content?.text === 'string') run.text += update.content.text;
+}
+
+// Run a goal command: the running goal first, the native goal API only for
+// goals the agent created on its own.
 function handleGoalCommand(command, message) {
   const msg = parseMessage(message);
   const sessionId = sessionIdOf(msg);
   const clientRequestId = msg.id;
+  const run = goalRuns.get(sessionId);
+  if (command.kind === 'create') {
+    startGoalRun(sessionId, clientRequestId, command.argument);
+    return;
+  }
+  if (run) {
+    if (command.kind === 'pause') {
+      if (run.status !== 'running') {
+        answerGoalCommand(sessionId, clientRequestId, `The goal is ${run.status}.`);
+        return;
+      }
+      run.status = 'paused';
+      answerGoalRun(run, 'Goal paused.');
+      answerGoalCommand(sessionId, clientRequestId, 'Goal paused.');
+      return;
+    }
+    if (command.kind === 'resume') {
+      if (run.status === 'running') {
+        answerGoalCommand(sessionId, clientRequestId, 'The goal is already running.');
+        return;
+      }
+      run.status = 'running';
+      run.clientRequestId = clientRequestId;
+      sendGoalTurn(run, false);
+      return;
+    }
+    if (command.kind === 'clear') {
+      goalRuns.delete(sessionId);
+      answerGoalRun(run, 'Goal cleared.');
+      answerGoalCommand(sessionId, clientRequestId, 'Goal cleared.');
+      return;
+    }
+    if (command.kind === 'objective') {
+      run.objective = String(command.argument || '').trim();
+      answerGoalCommand(sessionId, clientRequestId, `The goal now reads:\n${run.objective}`);
+      return;
+    }
+    if (command.kind === 'get') {
+      const minutes = Math.round((Date.now() - run.startedAt) / 60000);
+      answerGoalCommand(sessionId, clientRequestId, `The goal is ${run.status}. Turns ${run.turns}, ${minutes} min.\n${run.objective}`);
+      return;
+    }
+  }
   const calls = {
-    // A budget by default: the goal keeps working on its own after this turn
-    // ends, and without a cap it burns tokens nobody can see.
-    create: ['mcode/session/goal/create', { sessionId, objective: command.argument, tokenBudget: GOAL_TOKEN_BUDGET }],
     get: ['mcode/session/goal/get', { sessionId }],
     pause: ['mcode/session/goal/patch', { sessionId, status: 'paused' }],
     resume: ['mcode/session/goal/patch', { sessionId, status: 'active' }],
     clear: ['mcode/session/goal/clear', { sessionId }],
     objective: ['mcode/session/goal/patch', { sessionId, objective: command.argument }],
   };
-  const [method, params] = calls[command.kind];
+  const call = calls[command.kind];
+  if (!call) {
+    // A goal command the agent has no API for: the prompt goes through.
+    writeChildMessage(message);
+    return;
+  }
+  const [method, params] = call;
   // The prompt never reaches the agent, so it must not stay pending either.
   pendingPrompts.delete(idKey(clientRequestId));
   sendProxyRequest(method, params, { kind: 'goal', goalKind: command.kind, sessionId, clientRequestId });
@@ -401,10 +578,6 @@ function summarizeGoal(kind, result) {
     if (!goal) return 'No goal is set for this session.';
     const budget = goal.tokenBudget ? `, budget ${goal.tokensUsed}/${goal.tokenBudget} tokens` : '';
     return `Goal ${goal.goalId} is ${goal.status}${budget}. Turns ${goal.turnsUsed}.\n${goal.objective}`;
-  }
-  if (kind === 'create') {
-    if (!goal) return 'The goal could not be created.';
-    return `Goal ${goal.goalId} created (${goal.status}).\n${goal.objective}`;
   }
   if (!goal) return 'The goal could not be updated.';
   return `Goal ${goal.goalId} is now ${goal.status}.`;
@@ -530,9 +703,13 @@ function handleGoalUpdate(sessionId, goal) {
 }
 
 // The agent answered a request the proxy sent on its own behalf.
-function handleProxyResponse(proxyRequest, msg) {
+function handleProxyResponse(proxyRequest, msg, line) {
   if (proxyRequest.kind === 'goal') {
     finishGoalCommand(proxyRequest, msg);
+    return;
+  }
+  if (proxyRequest.kind === 'goal-run') {
+    handleGoalTurnEnd(proxyRequest.run, msg, line);
     return;
   }
   const sessionId = proxyRequest.sessionId;
@@ -566,8 +743,14 @@ function takeProxyResponse(line) {
   const key = idKey(msg.id);
   const proxyRequest = proxyRequests.get(key);
   if (!proxyRequest) return null;
+  // The agent refused the prompt because a turn is still running: that is not
+  // the end of the goal turn, so the prompt is sent again instead.
+  if (proxyRequest.kind === 'goal-run' && msg.error && RETRYABLE_REJECTION.test(String(msg.error.message || ''))) {
+    const sent = sentPrompts.get(key);
+    if (sent && scheduleResend(sent)) return msg;
+  }
   proxyRequests.delete(key);
-  handleProxyResponse(proxyRequest, msg);
+  handleProxyResponse(proxyRequest, msg, line);
   return msg;
 }
 
@@ -813,6 +996,11 @@ function interceptIncoming(line) {
     }
     if (msg && msg.method === 'session/cancel' && msg.params && typeof msg.params.sessionId === 'string') {
       cancelledSessions.add(msg.params.sessionId);
+      // A cancelled turn ends the goal: T3 sends a cancel with every message
+      // it sends while a turn is running, and the goal must not carry on
+      // behind the user's back.
+      const run = goalRuns.get(msg.params.sessionId);
+      if (run) run.status = 'stopped';
     }
     if (msg && msg.id !== undefined && msg.id !== null) {
       const idStr = String(msg.id);
@@ -900,6 +1088,8 @@ function startProxy(targetLauncher, targetArgs) {
 
   const rlOut = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
   rlOut.on('line', (line) => {
+    // The agent's answer to a running goal is the goal's output.
+    accumulateGoalText(line);
     // The agent's extension notifications are translated or dropped, never
     // forwarded: T3 does not know these methods.
     if (handleExtensionNotification(line)) return;
@@ -929,13 +1119,8 @@ function startProxy(targetLauncher, targetArgs) {
     if (outgoing === null) return;
     // A "/goal ..." prompt is a goal command, not something for the agent.
     const goal = parseGoalCommand(outgoing);
-    if (goal && nativeMethods.has('mcode/session/goal/create')) {
-      handleGoalCommand(goal, outgoing);
-      return;
-    }
     if (goal) {
-      // The agent has no native goal API: the prompt goes through unchanged.
-      writeChildMessage(outgoing);
+      handleGoalCommand(goal, outgoing);
       return;
     }
     // 'defer', 'hold' and 'steer' are handled inside steerIncoming.

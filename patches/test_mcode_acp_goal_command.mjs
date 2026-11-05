@@ -59,12 +59,11 @@ check('the command list notification carries it too', notified, commandLists.map
 // The command has to work, not just show up.
 const result = await request('session/prompt', {
   sessionId,
-  prompt: [{ type: 'text', text: '/goal Verify that the advertised goal command works.' }],
+  prompt: [{ type: 'text', text: '/goal Write the line COMMAND_OK to /tmp/mcode-goal-command.txt and stop.' }],
 });
 check('the advertised command works', result.result?.stopReason === 'end_turn', JSON.stringify(result.result ?? result.error));
 const goal = await request('mcode/session/goal/get', { sessionId });
-check('it created a goal', Boolean(goal.result?.goal), JSON.stringify(goal.result?.goal?.goalId));
-await request('mcode/session/goal/clear', { sessionId });
+check('it left no native goal running', !goal.result?.goal, JSON.stringify(goal.result?.goal?.goalId ?? null));
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 child.kill();

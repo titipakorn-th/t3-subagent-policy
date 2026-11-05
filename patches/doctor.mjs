@@ -108,20 +108,17 @@ check('the goal command is advertised to the client',
   (created.result?.slashCommands ?? []).some((c) => c.name === 'goal'),
   JSON.stringify((created.result?.slashCommands ?? []).map((c) => c.name)));
 
-// 3. The goal API, end to end.
+// 3. The goal, end to end: the client must see the work, and no native goal
+//    may be left running behind the client's back.
 chunks.length = 0;
 const goal = await request('session/prompt', {
   sessionId,
-  prompt: [{ type: 'text', text: '/goal Doctor check: create a goal, then remove it.' }],
+  prompt: [{ type: 'text', text: '/goal Write the line DOCTOR_OK to /tmp/mcode-goal-doctor.txt and stop.' }],
 });
 check('a goal command is answered', !goal.error && goal.result?.stopReason === 'end_turn', JSON.stringify(goal.result ?? goal.error));
+check('the client saw the goal work', chunks.join('').length > 0, chunks.join('').slice(-120));
 const state = await request('mcode/session/goal/get', { sessionId });
-check('the goal reached the native store', Boolean(state.result?.goal), JSON.stringify(state.result?.goal?.goalId));
-if (state.result?.goal) {
-  await request('mcode/session/goal/clear', { sessionId });
-  const after = await request('mcode/session/goal/get', { sessionId });
-  check('the goal can be cleared again', !after.result?.goal);
-}
+check('no native goal is running', !state.result?.goal, JSON.stringify(state.result?.goal?.goalId ?? null));
 
 console.log('');
 console.log(failures === 0 ? 'everything checks out' : `${failures} check(s) failed`);

@@ -1,9 +1,15 @@
 #!/usr/bin/env node
-// Checks the proxy's goal bridge: a "/goal ..." prompt from the client is
-// answered by the agent's native goal API instead of being sent to the model.
+// Checks the proxy's goal bridge: a "/goal ..." prompt from the client is run
+// by the proxy as visible prompt turns.
+//
+// The agent's native goal API cannot be used here: mcode runs a goal's turns
+// in a child session and never projects them to the client, so the work would
+// be invisible in T3. The proxy keeps the client's request open and runs the
+// goal as ordinary turns, so the client sees the work while it happens.
 //
 //   node test_mcode_acp_goal_bridge.mjs [proxy] [launcher]
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import readline from 'node:readline';
 
 const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
@@ -48,37 +54,31 @@ await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
 const created = await request('session/new', { cwd: process.cwd(), mcpServers: [] });
 const sessionId = created.result.sessionId;
 
-// 1. Create a goal through the native API.
-const create = await request('session/prompt', {
+// 1. A goal the client can watch.
+const marker = '/tmp/mcode-goal-bridge-marker.txt';
+fs.rmSync(marker, { force: true });
+chunks.length = 0;
+const goal = await request('session/prompt', {
   sessionId,
-  prompt: [{ type: 'text', text: '/goal Verify the native goal bridge from the proxy. Scope: the proxy only. Verify: the goal shows up in the agent\'s native goal API.' }],
+  prompt: [{ type: 'text', text: `/goal Write the single line BRIDGE_OK to ${marker} and stop.` }],
 });
-check('the goal command answered the client', !create.error, create.error ? JSON.stringify(create.error) : JSON.stringify(create.result));
-check('the goal command did not become a model turn', create.result?.stopReason === 'end_turn', JSON.stringify(create.result));
+check('the goal command answered the client', !goal.error, JSON.stringify(goal.error));
+check('the goal command ended the turn', goal.result?.stopReason === 'end_turn', JSON.stringify(goal.result));
 const said = chunks.join('');
-check('the client was told about the goal', /goal .* created/i.test(said), said.slice(-160));
+check('the client saw the agent work', said.length > 0, said.slice(-200));
+check('the work was done', fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').includes('BRIDGE_OK'), marker);
 
-// 2. The goal must exist in the agent's native goal API.
-const get = await request('mcode/session/goal/get', { sessionId });
-check('the native goal API has the goal', !get.error && Boolean(get.result?.goal), get.error ? JSON.stringify(get.error) : JSON.stringify(get.result?.goal?.goalId));
-check('the goal objective is the one from the command',
-  (get.result?.goal?.objective ?? '').includes('native goal bridge'),
-  (get.result?.goal?.objective ?? '').slice(0, 80));
+// 2. No native goal: it would do the same work again, invisibly.
+const native = await request('mcode/session/goal/get', { sessionId });
+check('no native goal was left running', !native.result?.goal, JSON.stringify(native.result?.goal?.goalId ?? null));
 
-// 3. Status through the bridge.
+// 3. The status of the goal that just ran.
 chunks.length = 0;
 const status = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: '/goal status' }] });
-check('the status command answered', !status.error && status.result?.stopReason === 'end_turn', JSON.stringify(status.result ?? status.error));
-check('the status command reported the goal', /is active/i.test(chunks.join('')), chunks.join('').slice(-160));
+check('the status command was answered', !status.error && status.result?.stopReason === 'end_turn', JSON.stringify(status.result ?? status.error));
+check('the status command reported the goal', /goal is (met|running|stopped)/i.test(chunks.join('')), chunks.join('').slice(-160));
 
-// 4. Clear it again.
-chunks.length = 0;
-const clear = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: '/goal stop' }] });
-check('the stop command answered', !clear.error && clear.result?.stopReason === 'end_turn', JSON.stringify(clear.result ?? clear.error));
-const after = await request('mcode/session/goal/get', { sessionId });
-check('the goal is gone', !after.result?.goal, JSON.stringify(after.result?.goal ?? null));
-
-// 5. The prompt as T3 Code sends it: the user's message wrapped in
+// 4. The prompt as T3 Code sends it: the user's message wrapped in
 //    instruction blocks. The command still has to be found.
 chunks.length = 0;
 const wrapped = [
@@ -92,21 +92,14 @@ const wrapped = [
   '</plugin-hook-context>',
   '',
   '<user_request>',
-  '/goal Wrapped command must still create a goal.',
+  '/goal Reply with the single word WRAPPED and stop.',
   '</user_request>',
 ].join('\n');
 const wrappedGoal = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrapped }] });
 check('a wrapped goal command is answered', !wrappedGoal.error && wrappedGoal.result?.stopReason === 'end_turn', JSON.stringify(wrappedGoal.result ?? wrappedGoal.error));
-const wrappedState = await request('mcode/session/goal/get', { sessionId });
-check('the wrapped command created a goal', Boolean(wrappedState.result?.goal), JSON.stringify(wrappedState.result?.goal?.goalId));
-check('the objective is the user request, not the wrapper',
-  (wrappedState.result?.goal?.objective ?? '').includes('Wrapped command must still create a goal'),
-  (wrappedState.result?.goal?.objective ?? '').slice(0, 80));
-if (wrappedState.result?.goal) {
-  await request('mcode/session/goal/clear', { sessionId });
-}
+check('the wrapped command started a goal', /WRAPPED/i.test(chunks.join('')), chunks.join('').slice(-200));
 
-// 6. An ordinary prompt whose instruction blocks talk about goals must reach
+// 5. An ordinary prompt whose instruction blocks talk about goals must reach
 //    the model instead of being taken for a goal command.
 chunks.length = 0;
 const ordinary = [
@@ -121,10 +114,9 @@ const ordinary = [
 ].join('\n');
 const ordinaryResult = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: ordinary }] });
 check('the ordinary prompt was answered', !ordinaryResult.error, JSON.stringify(ordinaryResult.error ?? ordinaryResult.result));
-const afterOrdinary = await request('mcode/session/goal/get', { sessionId });
-check('the ordinary prompt did not create a goal', !afterOrdinary.result?.goal, JSON.stringify(afterOrdinary.result?.goal?.goalId));
 check('the ordinary prompt reached the model', chunks.join('').length > 0, chunks.join('').slice(-100));
 
+fs.rmSync(marker, { force: true });
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 child.kill();
 process.exit(failures === 0 ? 0 : 1);
