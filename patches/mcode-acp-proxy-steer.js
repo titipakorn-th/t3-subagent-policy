@@ -363,13 +363,20 @@ function parseGoalCommand(message) {
   return null;
 }
 
+// A goal keeps working after the turn that created it ends, and the ACP client
+// only sees the turn it asked for. The cap is what stops that from running
+// forever unseen.
+const GOAL_TOKEN_BUDGET = 900000;
+
 // Run a goal command against the agent's native goal API and answer the client.
 function handleGoalCommand(command, message) {
   const msg = parseMessage(message);
   const sessionId = sessionIdOf(msg);
   const clientRequestId = msg.id;
   const calls = {
-    create: ['mcode/session/goal/create', { sessionId, objective: command.argument }],
+    // A budget by default: the goal keeps working on its own after this turn
+    // ends, and without a cap it burns tokens nobody can see.
+    create: ['mcode/session/goal/create', { sessionId, objective: command.argument, tokenBudget: GOAL_TOKEN_BUDGET }],
     get: ['mcode/session/goal/get', { sessionId }],
     pause: ['mcode/session/goal/patch', { sessionId, status: 'paused' }],
     resume: ['mcode/session/goal/patch', { sessionId, status: 'active' }],
