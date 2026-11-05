@@ -41,10 +41,10 @@ const HOLD_TIMEOUT_MS = 30000;
 const STEER_TIMEOUT_MS = 15000;
 const STEER_RELAY_TIMEOUT_MS = 300000;
 // A goal runs as ordinary prompt turns, so it needs a cap of its own: the
-// turn count stops it, the time cap stops a single long turn from running
-// for hours.
-const GOAL_MAX_TURNS = Number(process.env.MCODE_GOAL_MAX_TURNS || 20);
-const GOAL_MAX_MS = Number(process.env.MCODE_GOAL_MAX_MS || 7200000);
+// turn count stops it, and the time budget cuts off a turn that runs long.
+// Both are per goal run: a new goal gets a new budget.
+const GOAL_MAX_TURNS = Number(process.env.MCODE_GOAL_MAX_TURNS || 10);
+const GOAL_MAX_MS = Number(process.env.MCODE_GOAL_MAX_MS || 300000);
 // The agent ends a finished goal with this line.
 const GOAL_DONE_MARKER = 'GOAL_COMPLETE';
 let proxySequence = 0;
@@ -399,6 +399,42 @@ function sendGoalTurn(run, first) {
     method: 'session/prompt',
     params: { sessionId: run.sessionId, prompt: [{ type: 'text', text: goalRunPrompt(run, first) }] },
   });
+  startGoalTimer(run);
+}
+
+// The goal's time budget: a turn that runs past the deadline is cut off, so
+// the budget holds even when a single turn is long.
+function startGoalTimer(run) {
+  clearGoalTimer(run);
+  const remaining = run.deadline - Date.now();
+  if (remaining <= 0) {
+    stopGoalRun(run, 'the time budget ran out');
+    return;
+  }
+  run.timer = setTimeout(() => stopGoalRun(run, 'the time budget ran out'), remaining);
+  if (typeof run.timer.unref === 'function') run.timer.unref();
+}
+
+function clearGoalTimer(run) {
+  if (!run.timer) return;
+  clearTimeout(run.timer);
+  run.timer = null;
+}
+
+// The budget is spent: interrupt the running turn and tell the client.
+function stopGoalRun(run, reason) {
+  if (run.status !== 'running') return;
+  run.status = 'stopped';
+  run.reason = reason;
+  clearGoalTimer(run);
+  try {
+    writeChildMessage(JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'session/cancel',
+      params: { sessionId: run.sessionId },
+    }));
+  } catch {}
+  answerGoalRun(run, `Goal stopped: ${reason}.`);
 }
 
 // A native goal for this session would do the same work, invisibly.
@@ -443,6 +479,7 @@ function startGoalRun(sessionId, clientRequestId, objective) {
   const previous = goalRuns.get(sessionId);
   if (previous) {
     previous.status = 'stopped';
+    clearGoalTimer(previous);
     answerGoalRun(previous, 'The goal was replaced by a new one.');
   }
   const run = {
@@ -453,6 +490,9 @@ function startGoalRun(sessionId, clientRequestId, objective) {
     turns: 0,
     text: '',
     startedAt: Date.now(),
+    deadline: Date.now() + GOAL_MAX_MS,
+    timer: null,
+    reason: null,
   };
   goalRuns.set(sessionId, run);
   clearNativeGoal(sessionId);
@@ -479,21 +519,33 @@ function handleGoalTurnEnd(run, msg, line) {
   releaseUpstreamPrompt(line);
   if (msg.error) {
     run.status = 'failed';
+    clearGoalTimer(run);
     answerGoalRun(run, `The goal turn failed: ${msg.error?.message || msg.error?.code}`);
     return;
   }
   if (run.status !== 'running') {
-    answerGoalRun(run, `Goal ${run.status}.`);
+    clearGoalTimer(run);
+    answerGoalRun(run, `Goal ${run.status}${run.reason ? `: ${run.reason}` : ''}.`);
     return;
   }
   if (goalTurnIsComplete(run.text)) {
     run.status = 'met';
+    clearGoalTimer(run);
     answerGoalRun(run, `Goal met after ${run.turns} turn(s).`);
     return;
   }
-  if (run.turns >= GOAL_MAX_TURNS || Date.now() - run.startedAt >= GOAL_MAX_MS) {
+  if (run.turns >= GOAL_MAX_TURNS) {
     run.status = 'stopped';
-    answerGoalRun(run, `Goal stopped after ${run.turns} turn(s) without being met.`);
+    run.reason = `the turn budget of ${GOAL_MAX_TURNS} turns ran out`;
+    clearGoalTimer(run);
+    answerGoalRun(run, `Goal stopped after ${run.turns} turn(s) without being met: ${run.reason}.`);
+    return;
+  }
+  if (Date.now() >= run.deadline) {
+    run.status = 'stopped';
+    run.reason = 'the time budget ran out';
+    clearGoalTimer(run);
+    answerGoalRun(run, `Goal stopped after ${run.turns} turn(s) without being met: ${run.reason}.`);
     return;
   }
   sendGoalTurn(run, false);
@@ -538,12 +590,18 @@ function handleGoalCommand(command, message) {
         return;
       }
       run.status = 'running';
+      run.reason = null;
+      // A resumed goal gets a fresh budget window: the budget covers the time
+      // the goal actually works, not the time it waited.
+      run.startedAt = Date.now();
+      run.deadline = Date.now() + GOAL_MAX_MS;
       run.clientRequestId = clientRequestId;
       sendGoalTurn(run, false);
       return;
     }
     if (command.kind === 'clear') {
       goalRuns.delete(sessionId);
+      clearGoalTimer(run);
       answerGoalRun(run, 'Goal cleared.');
       answerGoalCommand(sessionId, clientRequestId, 'Goal cleared.');
       return;

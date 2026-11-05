@@ -33,6 +33,7 @@ const EXTENSIONS = {
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const calls = [];
+const pendingSlow = new Map(); // sessionId -> prompt id of a slow turn
 // The test reads the calls the agent got, so it can tell what the proxy did.
 const writeCalls = () => {
   try {
@@ -83,16 +84,27 @@ rl.on('line', (line) => {
     reply({ cleared: true });
     return;
   }
+  if (msg.method === 'session/cancel') {
+    // A cancelled turn ends with a stop reason.
+    const id = pendingSlow.get(msg.params?.sessionId);
+    if (id !== undefined) {
+      pendingSlow.delete(msg.params.sessionId);
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } }) + '\n');
+    }
+    return;
+  }
   if (msg.method === 'session/prompt') {
     prompts += 1;
     seen.push(prompts);
     if (mode === 'goal') {
       // Every turn produces text the client can see. The goal is only met on
       // the last turn. With the "middle" style the marker shows up in the
-      // middle of the turn, never as its last line.
+      // middle of the turn, never as its last line. With the "slow" style
+      // the turn takes a long time and is cancelled from the outside.
       const sessionId = msg.params?.sessionId;
       const done = prompts > goalTurns;
-      const text = process.argv[4] === 'middle'
+      const style = process.argv[4];
+      const text = style === 'middle'
         ? `the goal complete check ran\nstill working on goal turn ${prompts}`
         : `goal turn ${prompts}${done ? '\nGOAL_COMPLETE' : ''}`;
       process.stdout.write(JSON.stringify({
@@ -100,6 +112,18 @@ rl.on('line', (line) => {
         method: 'session/update',
         params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } },
       }) + '\n');
+      if (style === 'slow') {
+        // The turn runs until the client cancels it.
+        const id = msg.id;
+        pendingSlow.set(sessionId, id);
+        const timer = setTimeout(() => {
+          pendingSlow.delete(sessionId);
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } }) + '\n');
+        }, 600000);
+        timer.unref?.();
+        process.on('SIGTERM', () => process.exit(0));
+        return;
+      }
       reply({ stopReason: 'end_turn' });
       return;
     }

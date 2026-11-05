@@ -92,5 +92,11 @@ const passing = await runGoal(50, { MCODE_GOAL_MAX_TURNS: '2' }, 'middle');
 check('a passing mention did not end the goal', !/Goal met/.test(passing.said), passing.said.slice(-120));
 check('the goal kept working instead', /without being met/.test(passing.said), passing.said.slice(-120));
 
+// 4. A turn that runs past the time budget is cut off.
+const slow = await runGoal(50, { MCODE_GOAL_MAX_MS: '2000' }, 'slow');
+check('the slow goal was answered', !slow.goal.error && slow.goal.result?.stopReason === 'end_turn', JSON.stringify(slow.goal.result ?? slow.goal.error));
+check('the time budget cut the turn off', /time budget ran out/.test(slow.said), slow.said.slice(-160));
+check('the agent was cancelled', slow.calls.includes('session/cancel'), slow.calls.join(','));
+
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
