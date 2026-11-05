@@ -23,9 +23,11 @@ function check(label, ok, detail) {
 }
 
 // Run a goal against the fake agent and report what the client saw.
-async function runGoal(agentTurns, env) {
-  const callsFile = path.join(os.tmpdir(), `fake-agent-calls-${process.pid}-${agentTurns}.json`);
-  const child = spawn(process.execPath, [PROXY, process.execPath, AGENT, 'goal', String(agentTurns)], {
+async function runGoal(agentTurns, env, style) {
+  const callsFile = path.join(os.tmpdir(), `fake-agent-calls-${process.pid}-${agentTurns}-${style || 'marker'}.json`);
+  const args = [PROXY, process.execPath, AGENT, 'goal', String(agentTurns)];
+  if (style) args.push(style);
+  const child = spawn(process.execPath, args, {
     stdio: ['pipe', 'pipe', 'inherit'],
     env: { ...process.env, MCODE_FAKE_AGENT_CALLS: callsFile, ...env },
   });
@@ -84,6 +86,11 @@ check('the capped goal was answered', !capped.goal.error && capped.goal.result?.
 const cappedPrompts = capped.calls.filter((m) => m === 'session/prompt').length;
 check('the goal stopped at the turn cap', cappedPrompts === 3, `prompts: ${cappedPrompts}`);
 check('the client was told the goal was not met', /without being met/.test(capped.said), capped.said.slice(-120));
+
+// 3. A turn that only mentions the marker in passing must not end the goal.
+const passing = await runGoal(50, { MCODE_GOAL_MAX_TURNS: '2' }, 'middle');
+check('a passing mention did not end the goal', !/Goal met/.test(passing.said), passing.said.slice(-120));
+check('the goal kept working instead', /without being met/.test(passing.said), passing.said.slice(-120));
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

@@ -88,10 +88,13 @@ rl.on('line', (line) => {
     seen.push(prompts);
     if (mode === 'goal') {
       // Every turn produces text the client can see. The goal is only met on
-      // the last turn.
+      // the last turn. With the "middle" style the marker shows up in the
+      // middle of the turn, never as its last line.
       const sessionId = msg.params?.sessionId;
       const done = prompts > goalTurns;
-      const text = `goal turn ${prompts}${done ? '\nGOAL_COMPLETE' : ''}`;
+      const text = process.argv[4] === 'middle'
+        ? `the goal complete check ran\nstill working on goal turn ${prompts}`
+        : `goal turn ${prompts}${done ? '\nGOAL_COMPLETE' : ''}`;
       process.stdout.write(JSON.stringify({
         jsonrpc: '2.0',
         method: 'session/update',

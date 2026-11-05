@@ -459,6 +459,18 @@ function startGoalRun(sessionId, clientRequestId, objective) {
   sendGoalTurn(run, true);
 }
 
+// Did the agent end the turn by declaring the goal done?
+//
+// ACP has no "goal finished" signal: the turn only ends with a stop reason.
+// The marker line is the agent's own word, so it is checked strictly - it has
+// to be the last line of the turn, so that passing mention of it in the
+// middle of a report does not end the goal early.
+function goalTurnIsComplete(text) {
+  const lines = String(text).split('\n').map((line) => line.trim()).filter(Boolean);
+  const last = lines[lines.length - 1] ?? '';
+  return /^goal[_ ]complete[.!]?$/i.test(last);
+}
+
 // The turn of a running goal ended: continue the goal, or finish it.
 function handleGoalTurnEnd(run, msg, line) {
   // A steered client request is answered by the turn that carried it.
@@ -474,7 +486,7 @@ function handleGoalTurnEnd(run, msg, line) {
     answerGoalRun(run, `Goal ${run.status}.`);
     return;
   }
-  if (/goal[_ ]complete/i.test(run.text)) {
+  if (goalTurnIsComplete(run.text)) {
     run.status = 'met';
     answerGoalRun(run, `Goal met after ${run.turns} turn(s).`);
     return;
