@@ -219,6 +219,7 @@ node patches/test_mcode_acp_goal_prompt_collision.mjs  # a prompt during a goal 
 ./patches/remove-plugin.sh goal-mode@local     # remove a plugin and stop its leftover servers
 ./patches/test_install_lifecycle.sh            # install/check/uninstall on a machine that has nothing
 node patches/doctor.mjs                        # does this machine have the whole chain?
+./patches/doctor.sh                            # the same, on a machine without a system node
 ```
 
 `doctor.mjs` runs the real agent and reports each part: the proxy is patched and matches the
@@ -297,6 +298,12 @@ the model as an ordinary turn:
 | `/goal resume` | `goal/patch` with `status: "active"` |
 | `/goal stop` | `goal/clear` |
 | `/goal edit <text>` | `goal/patch` with the new objective |
+
+T3 Code sends the user's message wrapped in instruction blocks, so the proxy takes the text out
+of the `<user_request>` block first. Without that, a goal typed in T3 was never a command at
+all, and the natural language patterns - unanchored, and matching the goal-mode hook's own
+"report the current goal state" - took ordinary prompts for goal commands, so the proxy
+answered with the goal status and the model never saw what the user wrote.
 
 The natural language the goal-mode plugin used to detect works too, so removing the plugin did
 not cost the phrasing: "set my goal to ...", "what is my current goal?", "pause my goal",
