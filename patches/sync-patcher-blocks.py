@@ -193,7 +193,9 @@ patchers = older_patchers()
 anchors = "MIGRATION_ANCHORS = {\n" + "".join(
     f'    "{sha}": {items!r},\n' for sha, items in sorted(patchers.items())
 ) + "}\n"
-patcher = re.sub(r"^MIGRATION_ANCHORS = \{.*?^\}\n", anchors, patcher, flags=re.S | re.M)
+# A lambda replacement: re.sub would turn the escaped newlines in the text
+# into real ones and break the file.
+patcher = re.sub(r"^MIGRATION_ANCHORS = \{.*?^\}\n", lambda m: anchors, patcher, flags=re.S | re.M)
 if "MIGRATION_ANCHORS = {" not in patcher:
     patcher = patcher.replace("EDITS = [", anchors + "\nEDITS = [", 1)
 

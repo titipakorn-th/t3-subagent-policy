@@ -78,6 +78,53 @@ check('the stop command answered', !clear.error && clear.result?.stopReason === 
 const after = await request('mcode/session/goal/get', { sessionId });
 check('the goal is gone', !after.result?.goal, JSON.stringify(after.result?.goal ?? null));
 
+// 5. The prompt as T3 Code sends it: the user's message wrapped in
+//    instruction blocks. The command still has to be found.
+chunks.length = 0;
+const wrapped = [
+  '<system-reminder>',
+  'Use `tool_search` to discover permitted on-demand tools.',
+  '</system-reminder>',
+  '',
+  '<plugin-hook-context>',
+  'Goal Mode is active for this session.',
+  'Call goal_get with view="summary" and report the current goal state.',
+  '</plugin-hook-context>',
+  '',
+  '<user_request>',
+  '/goal Wrapped command must still create a goal.',
+  '</user_request>',
+].join('\n');
+const wrappedGoal = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: wrapped }] });
+check('a wrapped goal command is answered', !wrappedGoal.error && wrappedGoal.result?.stopReason === 'end_turn', JSON.stringify(wrappedGoal.result ?? wrappedGoal.error));
+const wrappedState = await request('mcode/session/goal/get', { sessionId });
+check('the wrapped command created a goal', Boolean(wrappedState.result?.goal), JSON.stringify(wrappedState.result?.goal?.goalId));
+check('the objective is the user request, not the wrapper',
+  (wrappedState.result?.goal?.objective ?? '').includes('Wrapped command must still create a goal'),
+  (wrappedState.result?.goal?.objective ?? '').slice(0, 80));
+if (wrappedState.result?.goal) {
+  await request('mcode/session/goal/clear', { sessionId });
+}
+
+// 6. An ordinary prompt whose instruction blocks talk about goals must reach
+//    the model instead of being taken for a goal command.
+chunks.length = 0;
+const ordinary = [
+  '<plugin-hook-context>',
+  'Goal Mode is active for this session.',
+  'Call goal_get with view="summary" and report the current goal state.',
+  '</plugin-hook-context>',
+  '',
+  '<user_request>',
+  'Summarise the goal state machine in this repository in one sentence.',
+  '</user_request>',
+].join('\n');
+const ordinaryResult = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: ordinary }] });
+check('the ordinary prompt was answered', !ordinaryResult.error, JSON.stringify(ordinaryResult.error ?? ordinaryResult.result));
+const afterOrdinary = await request('mcode/session/goal/get', { sessionId });
+check('the ordinary prompt did not create a goal', !afterOrdinary.result?.goal, JSON.stringify(afterOrdinary.result?.goal?.goalId));
+check('the ordinary prompt reached the model', chunks.join('').length > 0, chunks.join('').slice(-100));
+
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 child.kill();
 process.exit(failures === 0 ? 0 : 1);

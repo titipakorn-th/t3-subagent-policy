@@ -287,12 +287,49 @@ function promptTextOf(message) {
 // The literal command family, plus the natural language the goal-mode plugin
 // used to detect ("set my goal to ...", "pause my goal", "what is my current
 // goal"), so removing the plugin did not cost the user their phrasing.
+// T3 Code wraps the user's message in instruction blocks, so a goal command
+// is inside <user_request>, not at the start of the prompt.
+function userTextOf(message) {
+  const msg = parseMessage(message);
+  const blocks = Array.isArray(msg?.params?.prompt) ? msg.params.prompt : [];
+  const text = blocks
+    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n');
+  const inner = /<user_request>([\s\S]*?)<\/user_request>/.exec(text);
+  return (inner ? inner[1] : text).trim();
+}
+
+// A goal command: the literal command family, or the natural language the
+// goal-mode plugin used to detect. Every pattern is anchored, because T3's
+// instruction blocks talk about goals themselves.
+const GOAL_COMMANDS = [
+  [/^\/goal\s+(stop|cancel)\b/i, 'clear'],
+  [/^\/goal\s+(clear|off|reset|none)\b/i, 'clear'],
+  [/^\/goal\s+(pause|hold)\b/i, 'pause'],
+  [/^\/goal\s+(resume|start|continue|run)\b/i, 'resume'],
+  [/^\/goal\s+status\b/i, 'get'],
+  [/^goal\s+status\b/i, 'get'],
+  [/^(what is|what's|whats|show me|show|tell me|describe|report)\s+(the\s+|my\s+|this\s+)?(current\s+)?goal\b/i, 'get'],
+  [/^(cancel|stop|abort)\s+(the\s+|my\s+|this\s+)?goal\b/i, 'clear'],
+  [/^(clear|remove|drop|forget)\s+(the\s+|my\s+|this\s+)?goal\b/i, 'clear'],
+  [/^(pause|hold|suspend|stop working on)\s+(the\s+|my\s+|this\s+)?goal\b/i, 'pause'],
+  [/^(resume|restart|continue)\s+(the\s+|my\s+|this\s+)?goal\b/i, 'resume'],
+  [/^\/goal\s+edit\s+(.+)$/is, 'objective'],
+  [/^(change|update|revise|rewrite)\s+(the\s+|my\s+)?goal\s+(?:to|into)\s+(.+)$/is, 'objective'],
+  [/^\/goal\s+replace\s+(.+)$/is, 'objective'],
+  [/^(replace|swap)\s+(the\s+|my\s+)?goal\s+(?:with|for|to)\s+(.+)$/is, 'objective'],
+  [/^\/goal\s+(plan|edit-plan)\b/i, null],
+  [/^(add|update|revise|set)\s+(the\s+)?(goal\s+)?plan\b/i, null],
+];
+
+// A "/goal ..." prompt from the client, mapped to the agent's native goal API.
 function parseGoalCommand(message) {
   const msg = parseMessage(message);
   if (!msg || msg.method !== 'session/prompt') return null;
   if (msg.id === undefined || msg.id === null) return null;
   if (sessionIdOf(msg) === null) return null;
-  const text = promptTextOf(message).trim();
+  const text = userTextOf(message);
   if (!text) return null;
 
   if (text.startsWith('/goal')) {
@@ -311,38 +348,18 @@ function parseGoalCommand(message) {
     return { kind: 'create', argument: rest };
   }
 
-  if (!/goal/i.test(text)) return null;
-
-  const controls = [
-    [/\/goal\s+(stop|cancel)\b|^(cancel|stop|abort)\s+(the\s+|my\s+|this\s+)?goal\b/i, 'clear'],
-    [/\/goal\s+(clear|off|reset|none)\b|^(clear|remove|drop|forget)\s+(the\s+|my\s+|this\s+)?goal\b/i, 'clear'],
-    [/\/goal\s+(pause|hold)\b|^(pause|hold|suspend|stop working on)\s+(the\s+|my\s+|this\s+)?goal\b|\/pause_goal\b/i, 'pause'],
-    [/\/goal\s+(resume|start|continue|run)\b|^(resume|restart|continue)\s+(the\s+|my\s+|this\s+)?goal\b|\/resume_goal\b/i, 'resume'],
-    [/\/goal\s+status\b|^goal\s+status\b|\bcurrent goal\b|\bshow (me )?(my )?goal\b|\bgoal state\b/i, 'get'],
-  ];
-  for (const [pattern, kind] of controls) {
-    if (pattern.test(text)) return { kind };
+  for (const [pattern, kind] of GOAL_COMMANDS) {
+    const match = pattern.exec(text);
+    if (!match) continue;
+    if (!kind) return null;
+    if (kind === 'objective') return { kind: 'objective', argument: match[1].trim() };
+    return { kind };
   }
 
-  // The plan family has no native equivalent, so those stay ordinary prompts.
-  if (/\/goal\s+history\b|^goal\s+history\b|goal\s+lifecycle\b/i.test(text)) return null;
-  if (/\/goal\s+(plan|edit-plan)\b|^(add|update|revise|set)\s+(the\s+)?(goal\s+)?plan\b/i.test(text)) return null;
-
-  const objectiveEdit = text.match(/\/goal\s+edit\s+(.+)$/is)
-    ?? text.match(/(?:change|update|revise|rewrite)\s+(?:the\s+|my\s+)?goal\s+(?:to|into)\s+(.+)$/is)
-    ?? text.match(/\/goal\s+replace\s+(.+)$/is)
-    ?? text.match(/(?:replace|swap)\s+(?:the\s+|my\s+)?goal\s+(?:with|for|to)\s+(.+)$/is);
-  if (objectiveEdit) return { kind: 'objective', argument: objectiveEdit[1].trim() };
-
-  const objective =
-    text.match(/\/goal\s+(.+)$/s)?.[1] ??
-    text.match(/^\s*goal\s*:\s*(.+)$/is)?.[1] ??
-    text.match(/^(?:set|start|create|make)\s+(?:a\s+|an\s+|my\s+)?(?:new\s+)?goal\s+(?:to|for|that is|:)\s*(.+)$/is)?.[1] ??
-    null;
-  if (objective && objective.trim()) return { kind: 'create', argument: objective.trim() };
-  // A bare "goal" is the status control. An incidental "/goal" in a path is
-  // not: a hijacked prompt would be swallowed instead of answered.
-  if (/^\s*goal\s*$/i.test(text)) return { kind: 'get' };
+  // A goal the user asked for.
+  const objective = /^(?:set|start|create|make)\s+(?:a\s+|an\s+|my\s+)?(?:new\s+)?goal\s+(?:to|for|that is|:)\s*(.+)$/is.exec(text);
+  if (objective) return { kind: 'create', argument: objective[1].trim() };
+  if (/^\/goal\b/.test(text)) return { kind: 'get' };
   return null;
 }
 
