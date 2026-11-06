@@ -170,12 +170,7 @@ case "$MODE" in
     fi
     # The shim only exists where T3 runs the antigravity clip proxy.
     if [ -f "$SHIM" ]; then
-      if grep -q "thinking_level_for" "$SHIM"; then
-        echo "OK   $SHIM (effort fix present)"
-      else
-        echo "MISS $SHIM (effort fix missing)"
-        exit 1
-      fi
+      python3 "$SHIM_PATCHER" "$SHIM" --check || exit 1
     fi
     exit 0
     ;;

@@ -65,6 +65,14 @@ def main():
     check("unknown revision is not downgraded", open(newer).read() != good
           and "unsuffixed_model" in open(newer).read())
 
+    # A revision with the new model list but without everything the known-good
+    # has is still older, and must be replaced.
+    older = os.path.join(tmp, "older-but-new-list.py")
+    write(older, good.replace("\ndef configured_mcp_servers():", "\ndef _removed():"))
+    result = run(older)
+    check("revision missing a known-good feature is replaced",
+          open(older).read() == good, result.stdout.strip())
+
     # A file that is not the clip proxy shim at all.
     foreign = os.path.join(tmp, "foreign.py")
     write(foreign, "print('hello')\n")
@@ -73,6 +81,18 @@ def main():
           and "unrecognised" in result.stderr + result.stdout,
           (result.stderr + result.stdout).strip())
     check("foreign file is untouched", open(foreign).read() == "print('hello')\n")
+
+    # The check mode must report an older revision as missing.
+    stale = os.path.join(tmp, "stale.py")
+    write(stale, good.replace("\ndef configured_mcp_servers():", "\ndef _removed():"))
+    result = subprocess.run([sys.executable, INSTALLER, stale, "--check"],
+                             capture_output=True, text=True)
+    check("check reports an older revision as MISS",
+          result.returncode != 0 and "MISS" in result.stdout, result.stdout.strip())
+    result = subprocess.run([sys.executable, INSTALLER, same, "--check"],
+                             capture_output=True, text=True)
+    check("check reports the known-good as OK",
+          result.returncode == 0 and "OK" in result.stdout, result.stdout.strip())
 
     print("\nall checks passed" if not failures else f"\n{failures} check(s) failed")
     return 1 if failures else 0

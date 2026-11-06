@@ -22,19 +22,17 @@ falls back to editing the code by shape for a revision it does not carry.
 import ast
 import hashlib
 import os
+import re
 import shutil
 import sys
 import time
 
 DEFAULT = os.path.expanduser("~/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py")
-TARGET = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
+ARGS = [a for a in sys.argv[1:] if a != "--check"]
+CHECK = "--check" in sys.argv
+TARGET = ARGS[0] if ARGS else DEFAULT
 KNOWN_GOOD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "acp_clip_proxy_shim.py")
-
-# The newer revision advertises the base model names and collapses the tiers into
-# a thinking level selector. A deployed shim without these is an older revision.
-NEW_REVISION_MARKERS = ("unsuffixed_model", "GEMINI_38_TIER_MODELS",
-                        "inject_subagent_policy")
 
 HELPERS = '''
 THINKING_LEVELS = ("low", "medium", "high")
@@ -114,22 +112,41 @@ if not os.path.exists(KNOWN_GOOD):
 src = open(TARGET).read()
 good = open(KNOWN_GOOD).read()
 
-if src == good:
-    print(f"already patched: {TARGET}")
-    sys.exit(0)
-
 if "class State:" not in src or "PROXY_MODELS" not in src:
     sys.exit(f"unrecognised shim layout (not the clip proxy shim): {TARGET}")
 
-if not any(marker in src for marker in NEW_REVISION_MARKERS):
-    # An older revision: the known-good file replaces it exactly.
+
+def features(text):
+    """The top-level names a shim revision defines."""
+    return set(re.findall(r"^(?:def|class)\s+([A-Za-z_]\w*)", text, re.M))
+
+
+missing = features(good) - features(src)
+
+if CHECK:
+    if missing:
+        print(f"MISS {TARGET} (older revision, missing: {', '.join(sorted(missing))})")
+        sys.exit(1)
+    if "thinking_level_for" not in src:
+        print(f"MISS {TARGET} (effort fix missing)")
+        sys.exit(1)
+    print(f"OK   {TARGET} (known-good shim)")
+    sys.exit(0)
+
+if src == good:
+    print(f"already patched: {TARGET}")
+    sys.exit(0)
+if missing:
+    # An older revision: it does not have everything the known-good has. The
+    # known-good file replaces it exactly.
     install(TARGET, good, "the known-good shim")
     print(f"installed the known-good shim over an older revision: {TARGET}")
+    print(f"missing from the deployed revision: {', '.join(sorted(missing))}")
     print("new ACP processes pick this up; restart T3 Code or open a new thread.")
     sys.exit(0)
 
-# A revision this repo does not carry: keep it, and only make sure the effort
-# fix is in it. Downgrading a newer shim would lose whatever it added.
+# A revision at least as new as the known-good: keep it, and only make sure the
+# effort fix is in it. Replacing it would lose whatever it added.
 if "thinking_level_for" in src:
     print(f"already patched: {TARGET}")
     sys.exit(0)
