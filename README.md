@@ -178,9 +178,11 @@ python3 patches/test_antigravity_shim_install.py  # check for the installer itse
 
 `install.sh` runs the installer for you, and `--check` reports the shim on the machines that have
 one. The installer replaces an older revision with the known-good file, keeps a `.bak-<timestamp>`
-of what was there, and refuses to touch a file it does not recognise. It never downgrades a newer
-shim: a revision this repo does not carry is left alone and only gets the effort fix, edited by
-shape (`class State:` plus the forward block) instead of by byte offset.
+of what was there, and refuses to touch a file it does not recognise. A revision is older when it
+is missing something the known-good defines, so the installer compares the top-level names each
+revision has: anything the known-good has and the deployed one lacks means the deployed one is
+older and gets replaced. A revision that has all of them is left alone and only gets the effort
+fix, edited by shape (`class State:` plus the forward block) instead of by byte offset.
 `antigravity-clip-effort.patch` is the raw diff for the macOS revision.
 
 New provider sessions pick it up — no T3 restart needed.
