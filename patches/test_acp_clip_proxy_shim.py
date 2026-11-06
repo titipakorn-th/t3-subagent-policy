@@ -48,8 +48,10 @@ def test_effort_routing():
     check("argon-low", shim.thinking_level_for("gemini-4-argon-low"), "low")
     check("claude-opus-low", shim.thinking_level_for("claude-opus-5-5-low"), "low")
 
-    # claude-*-high intentionally leaves the upstream level untouched.
-    check("claude-opus-high", shim.thinking_level_for("claude-opus-5-5-high"), None)
+    # A model whose name states a level gets that level, routed or not: the shim's
+    # own table carries "high" for claude-*-high, so leaving it unset would run the
+    # model at the upstream default and make the requested effort cosmetic.
+    check("claude-opus-high", shim.thinking_level_for("claude-opus-5-5-high"), "high")
     check("unknown", shim.thinking_level_for("some-model"), None)
     check("none", shim.thinking_level_for(None), None)
 
