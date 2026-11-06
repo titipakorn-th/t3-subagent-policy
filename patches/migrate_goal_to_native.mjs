@@ -10,10 +10,11 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { defaultLauncher, defaultProxy } from './mcode-paths.mjs';
 
 const BACKUP = process.argv[2] || path.join(os.homedir(), 'Workspaces/TestSpaces/goal-mode-backup/plugin-mcp-state-goals.json');
-const PROXY = process.argv[3] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
-const LAUNCHER = process.argv[4] || '/Users/prince/.minimax-code/releases/0.7.4/.mcode-launcher';
+const PROXY = process.argv[3] || defaultProxy();
+const LAUNCHER = process.argv[4] || defaultLauncher();
 
 const state = JSON.parse(fs.readFileSync(BACKUP, 'utf8'));
 const sessionId = state.activeSessionId;
@@ -64,7 +65,7 @@ await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
 // target session has to be resumed here first.
 const loaded = await request('session/load', {
   sessionId,
-  cwd: process.env.GOAL_MIGRATION_CWD || '/Users/prince/.minimax/workspace',
+  cwd: process.env.GOAL_MIGRATION_CWD || path.join(os.homedir(), '.minimax/workspace'),
   mcpServers: [],
 });
 if (loaded.error) {

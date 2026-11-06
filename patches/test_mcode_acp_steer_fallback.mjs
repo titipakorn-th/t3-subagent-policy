@@ -7,9 +7,10 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import path from 'node:path';
+import { defaultAcp, defaultLauncher, defaultProxy } from './mcode-paths.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
-const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
+const PROXY = process.argv[2] || defaultProxy();
 const FAKE = path.join(HERE, 'fake-agent.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failures = 0;

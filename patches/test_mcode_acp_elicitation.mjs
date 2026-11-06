@@ -14,8 +14,9 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { defaultAcp, defaultLauncher, defaultProxy } from './mcode-paths.mjs';
 
-const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
+const PROXY = process.argv[2] || defaultProxy();
 const require = createRequire(import.meta.url);
 const { interceptOutgoing, interceptIncoming, patchReleaseChunks } = require(PROXY);
 

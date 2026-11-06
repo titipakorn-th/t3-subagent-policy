@@ -6,9 +6,10 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import fs from 'node:fs';
+import { defaultAcp, defaultLauncher, defaultProxy } from './mcode-paths.mjs';
 
-const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
-const LAUNCHER = process.argv[3] || '/Users/prince/.minimax-code/releases/0.7.4/.mcode-launcher';
+const PROXY = process.argv[2] || defaultProxy();
+const LAUNCHER = process.argv[3] || defaultLauncher();
 const MARKER = 'PROXY_SYSTEM_PROMPT_MARKER_9F3A';
 const SP_FILE = '/tmp/mcode-append-system-prompt.txt';
 

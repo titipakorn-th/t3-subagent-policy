@@ -9,9 +9,10 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { defaultAcp, defaultLauncher, defaultProxy } from './mcode-paths.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
-const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
+const PROXY = process.argv[2] || defaultProxy();
 const FAKE = path.join(HERE, 'fake-agent.js');
 const MARKER = 'MCODE_T3_OWN_DELEGATION';
 let failures = 0;

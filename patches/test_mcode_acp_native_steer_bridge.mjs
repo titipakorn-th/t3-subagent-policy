@@ -9,9 +9,10 @@
 //   node test_mcode_acp_native_steer_bridge.mjs [proxy] [launcher]
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
+import { defaultAcp, defaultLauncher, defaultProxy } from './mcode-paths.mjs';
 
-const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
-const LAUNCHER = process.argv[3] || '/Users/prince/.minimax-code/releases/0.7.4/.mcode-launcher';
+const PROXY = process.argv[2] || defaultProxy();
+const LAUNCHER = process.argv[3] || defaultLauncher();
 const LONG = 'Use the bash tool to run exactly: sleep 20; echo LONG_DONE . Then reply with the word DONE.';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failures = 0;

@@ -12,8 +12,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { defaultAcp, defaultLauncher, defaultProxy } from './mcode-paths.mjs';
 
-const PROXY = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp-proxy.js';
+const PROXY = process.argv[2] || defaultProxy();
 const AGENT = process.argv[3] || path.join(path.dirname(new URL(import.meta.url).pathname), 'fake-agent.js');
 let failures = 0;
 

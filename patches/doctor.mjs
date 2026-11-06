@@ -11,22 +11,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { defaultLauncher, defaultProxy } from './mcode-paths.mjs';
+
 const HERE = path.dirname(new URL(import.meta.url).pathname);
-const PROXY = process.argv[2] || path.join(os.homedir(), '.minimax-code/bin/mcode-acp-proxy.js');
+const PROXY = process.argv[2] || defaultProxy();
 const FIXTURE = path.join(HERE, 'mcode-acp-proxy-steer.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// The release the launcher runs comes from ~/.minimax-code/current, so the
-// doctor works on any machine and after an mcode upgrade.
-function defaultLauncher() {
-  const root = path.dirname(path.dirname(PROXY));
-  try {
-    const release = fs.readFileSync(path.join(root, 'current'), 'utf8').trim();
-    return path.join(root, 'releases', release, '.mcode-launcher');
-  } catch {
-    return '';
-  }
-}
 
 const LAUNCHER = process.argv[3] || process.env.MCODE_LAUNCHER || defaultLauncher();
 

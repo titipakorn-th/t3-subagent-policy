@@ -10,8 +10,9 @@
 // Needs a logged-in MiniMax Code runtime; each scenario drives a real agent turn.
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
+import { defaultAcp, defaultLauncher, defaultProxy } from './mcode-paths.mjs';
 
-const target = process.argv[2] || '/Users/prince/.minimax-code/bin/mcode-acp';
+const target = process.argv[2] || defaultAcp();
 const CWD = process.env.MCODE_STEER_CWD || process.cwd();
 
 function connect() {
