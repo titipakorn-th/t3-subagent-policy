@@ -174,7 +174,14 @@ python3 patches/apply-antigravity-effort.py       # same, without the wrapper
 python3 patches/test_acp_clip_proxy_shim.py       # unit self-check for the routing logic
 python3 patches/test_clip_proxy_effort.py         # integration check: forwards thinkingLevel
 python3 patches/test_antigravity_shim_install.py  # check for the installer itself
+python3 patches/check-antigravity-upstream.py     # can this machine reach the hub at all?
 ```
+
+The shim answers the model list from its own tables, so T3 reports the provider as "ready" and
+lists its models even when the hub behind it is unreachable — and every prompt then fails. The
+last check above is what tells the two apart: it resolves the hub the launcher points at, connects
+to it, and asks for its model list. A `FAIL` there means the machine cannot see the tailnet the
+hub lives on, which no patch of ours can fix.
 
 `install.sh` runs the installer for you, and `--check` reports the shim on the machines that have
 one. The installer replaces an older revision with the known-good file, keeps a `.bak-<timestamp>`
