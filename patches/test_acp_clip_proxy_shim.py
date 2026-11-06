@@ -48,10 +48,13 @@ def test_effort_routing():
     check("argon-low", shim.thinking_level_for("gemini-4-argon-low"), "low")
     check("claude-opus-low", shim.thinking_level_for("claude-opus-5-5-low"), "low")
 
-    # A model whose name states a level gets that level, routed or not: the shim's
-    # own table carries "high" for claude-*-high, so leaving it unset would run the
-    # model at the upstream default and make the requested effort cosmetic.
-    check("claude-opus-high", shim.thinking_level_for("claude-opus-5-5-high"), "high")
+    # A routed model keeps exactly the level its own table carries. Shim revisions
+    # differ on whether claude-*-high carries one, and the patch must not change
+    # what the table says.
+    routed = shim.PROXY_MODELS.get("claude-opus-5-5-high")
+    check("claude-opus-high follows the routed table",
+          shim.thinking_level_for("claude-opus-5-5-high"),
+          routed[1] if routed else "high")
     check("unknown", shim.thinking_level_for("some-model"), None)
     check("none", shim.thinking_level_for(None), None)
 
