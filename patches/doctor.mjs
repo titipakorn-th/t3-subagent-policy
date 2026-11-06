@@ -108,6 +108,23 @@ check('the goal command is advertised to the client',
   (created.result?.slashCommands ?? []).some((c) => c.name === 'goal'),
   JSON.stringify((created.result?.slashCommands ?? []).map((c) => c.name)));
 
+// The internal task tool must not be registered for the ACP child: the agent
+// would start children that never appear as T3 threads. The proxy rewrites the
+// gate in the release chunk when it starts the child.
+const chunksDir = path.join(path.dirname(LAUNCHER), 'lib/node_modules/@minimax-ai/code/chunks');
+let gate = 'no release chunk';
+try {
+  const chunk = fs.readdirSync(chunksDir).find((f) => f.endsWith('.js')
+    && fs.readFileSync(path.join(chunksDir, f), 'utf8').includes('enableTaskTool!==!1&&'));
+  if (chunk) {
+    const code = fs.readFileSync(path.join(chunksDir, chunk), 'utf8');
+    gate = code.includes('MCODE_T3_OWN_DELEGATION') ? 'patched' : 'not patched';
+  } else {
+    gate = 'no gate found';
+  }
+} catch {}
+check('the internal task tool is gated off for the ACP child', gate === 'patched', gate);
+
 // 3. The goal, end to end: the client must see the work, and no native goal
 //    may be left running behind the client's back.
 chunks.length = 0;

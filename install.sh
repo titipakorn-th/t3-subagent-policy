@@ -154,6 +154,12 @@ case "$MODE" in
       echo "MISS $PROXY (not patched)"
       exit 1
     fi
+    if [ -f "$PROXY" ] && grep -q "MCODE_T3_OWN_DELEGATION" "$PROXY"; then
+      echo "OK   $PROXY (internal delegation gated off)"
+    else
+      echo "MISS $PROXY (internal delegation not gated off)"
+      exit 1
+    fi
     exit 0
     ;;
   uninstall)

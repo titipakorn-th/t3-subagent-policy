@@ -1164,6 +1164,35 @@ through mcp_invoke with tool_name "mcp__t3-code__delegate_task"), and use
 \`mcp__t3-code__task_cancel\` to stop a delegated task.
 `;
 
+// A directive is not a guarantee: the agent still had its own task tool, and
+// used it. The internal task tool is registered behind a capability gate in
+// the release chunks, so the gate is rewritten to also require this marker.
+// Only the ACP child the proxy starts gets the marker, so a standalone TUI of
+// the same release keeps its own subagents.
+const T3_DELEGATION_MARKER = 'MCODE_T3_OWN_DELEGATION';
+const T3_DELEGATION_GATE = /enableTaskTool!==!1&&(\w+)\.features\.delegation/g;
+
+// Rewrite the gate that registers the internal task tool, by shape: the chunk
+// names change with every release, but the gate does not.
+function patchDelegationGate(targetLauncher) {
+  try {
+    const releaseDir = path.dirname(targetLauncher);
+    const chunksDir = path.join(releaseDir, 'lib/node_modules/@minimax-ai/code/chunks');
+    if (!fs.existsSync(chunksDir)) return;
+    for (const f of fs.readdirSync(chunksDir)) {
+      if (!f.endsWith('.js')) continue;
+      const fullPath = path.join(chunksDir, f);
+      const code = fs.readFileSync(fullPath, 'utf8');
+      if (!code.includes('enableTaskTool!==!1&&')) continue;
+      const patched = code.replace(
+        T3_DELEGATION_GATE,
+        `enableTaskTool!==!1&&process.env.${T3_DELEGATION_MARKER}!=="1"&&$1.features.delegation`,
+      );
+      if (patched !== code) fs.writeFileSync(fullPath, patched, 'utf8');
+    }
+  } catch {}
+}
+
 // Write the system prompt the agent starts with. It is appended to the agent's
 // own identity prompt, so it lands in the real system prompt.
 function writeSystemPromptFile() {
@@ -1188,6 +1217,7 @@ function writeSystemPromptFile() {
 
 function startProxy(targetLauncher, targetArgs) {
   patchReleaseChunks(targetLauncher);
+  patchDelegationGate(targetLauncher);
 
   const systemPromptFile = writeSystemPromptFile();
   const args = systemPromptFile
@@ -1195,7 +1225,7 @@ function startProxy(targetLauncher, targetArgs) {
     : targetArgs;
   const child = spawn(targetLauncher, args, {
     stdio: ['pipe', 'pipe', 'inherit'],
-    env: process.env
+    env: { ...process.env, [T3_DELEGATION_MARKER]: '1' }
   });
   // The agent can exit while the client is still sending; that is not a crash.
   child.stdin.on('error', () => {});

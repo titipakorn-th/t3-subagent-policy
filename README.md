@@ -355,6 +355,54 @@ version it defines would create a goal that never runs. The working creation pat
 extension the proxy uses. Details and the upstream request:
 [`patches/UPSTREAM-create-goal.md`](patches/UPSTREAM-create-goal.md).
 
+## The agent must not spawn children of its own
+
+The symptom:
+
+```
+mcode started 5 internal delegates: mvs_9d88cad5d84342338b29b83462f2456d, ...
+T3 Code owns the orchestration - these do not appear as T3 threads.
+```
+
+The proxy already told the agent to use T3's `delegate_task`, in the system prompt it appends to
+the agent's identity prompt. The agent used its own `task` tool anyway: a prompt cannot take a
+capability away, and the internal task tool was still registered. The children it started ran in
+mcode's own session store, invisible to T3.
+
+The tool is registered behind a gate in the release chunk:
+
+```js
+n = e.enableTaskTool !== !1 && t.features.delegation
+```
+
+`features.delegation` comes from the agent's own `features:` block, which says `delegation: true`.
+The proxy therefore rewrites that gate, by shape (the chunk names change with every release):
+
+```js
+n = e.enableTaskTool !== !1 && process.env.MCODE_T3_OWN_DELEGATION !== "1" && t.features.delegation
+```
+
+Only the ACP child the proxy starts gets `MCODE_T3_OWN_DELEGATION=1`, so:
+
+- **T3-hosted mcode** has no internal task tool, and the agent routes subagent work to T3's
+  `delegate_task`, which shows up in the T3 UI and sidebar as a real thread;
+- **a standalone mcode TUI** of the same release runs without the marker and keeps its own
+  subagents.
+
+The rewrite is idempotent, and it lands in the release chunk the ACP child reads, so it survives an
+mcode upgrade (the next release ships a new chunk, and the next proxy start rewrites that one).
+
+`~/.minimax/config.yaml` with `agents.default.features.delegation: false` has the same effect, and
+is the fallback if the chunk shape ever changes. It is machine-global, though: it also takes the
+internal task tool away from the standalone TUI, and the agent's own `features:` block can only
+turn delegation off, never back on, so the config has to be the one that turns it off.
+
+Check it with:
+
+```bash
+node patches/test_mcode_acp_delegation_gate.mjs    # the gate, the marker, the TUI case
+```
+
 ## Known limits
 
 - This policy steers **subagents only**. The model and effort the user picks for the main thread are
@@ -367,3 +415,6 @@ extension the proxy uses. Details and the upstream request:
   internal "strong" subtask on its own.
 - `t3-acp.sh` resolves the endpoint for the environment that owns `~/.t3/userdata`. If you run the
   VS Code-hosted T3 as your primary, point `T3_RUNTIME_FILE` at that instance's runtime file.
+- The delegation gate only holds for the ACP path that goes through the patched proxy
+  (`~/.minimax-code/bin/mcode-acp`). That launcher falls back to the raw release launcher when it
+  cannot find a node, and then the agent gets its internal task tool back.
