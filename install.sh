@@ -142,6 +142,14 @@ PROXY="$HOME/.minimax-code/bin/mcode-acp-proxy.js"
 PATCHER="$DIR/patches/apply-mcode-acp-steer.py"
 PROXY_MARKER="RETRYABLE_REJECTION"
 
+# --- the antigravity clip proxy shim --------------------------------------
+# Every machine runs a different shim revision. An older one lists
+# claude-*-high and friends as separate models instead of a thinking level
+# selector, and only forwards an effort for the models in its PROXY_MODELS
+# table, so "low" was cosmetic. The repo carries the known-good shim.
+SHIM="$HOME/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py"
+SHIM_PATCHER="$DIR/patches/apply-antigravity-effort.py"
+
 case "$MODE" in
   print)
     # The policy block only.
@@ -160,6 +168,15 @@ case "$MODE" in
       echo "MISS $PROXY (internal delegation not gated off)"
       exit 1
     fi
+    # The shim only exists where T3 runs the antigravity clip proxy.
+    if [ -f "$SHIM" ]; then
+      if grep -q "thinking_level_for" "$SHIM"; then
+        echo "OK   $SHIM (effort fix present)"
+      else
+        echo "MISS $SHIM (effort fix missing)"
+        exit 1
+      fi
+    fi
     exit 0
     ;;
   uninstall)
@@ -176,4 +193,10 @@ if [ -f "$PROXY" ] && [ -f "$PATCHER" ]; then
   python3 "$PATCHER" "$PROXY" || true
 else
   echo "skipped  $PROXY (missing)"
+fi
+
+if [ -f "$SHIM" ] && [ -f "$SHIM_PATCHER" ]; then
+  python3 "$SHIM_PATCHER" "$SHIM" || true
+else
+  echo "skipped  $SHIM (missing)"
 fi

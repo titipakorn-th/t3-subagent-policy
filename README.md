@@ -73,6 +73,8 @@ yet, and writes a `.bak-<timestamp>` before changing anything.
 | `patches/mcode-acp-proxy-steer.js` | The known-good patched proxy (the patcher's target state) |
 | `patches/sync-patcher-blocks.py` | Regenerates the patcher's code blocks from the known-good proxy |
 | `patches/remove-plugin.sh` | Removes a MiniMax Code plugin and stops the MCP servers it leaves behind |
+| `patches/acp_clip_proxy_shim.py` | The known-good antigravity clip proxy shim (the installer's target state) |
+| `patches/apply-antigravity-effort.py` | Installs the known-good shim, with the effort fix, over an older revision |
 
 ## Roll out
 
@@ -147,27 +149,41 @@ curl -s http://127.0.0.1:3773/api/auth/session | head -c 200   # which environme
 ~/t3-subagent-policy/install.sh --uninstall
 ```
 
-## Provider-level fix: antigravity clip ignored the requested effort
+## Provider-level fix: the antigravity clip proxy shim
 
-T3's antigravity clip proxy (`~/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py`) only sent
-an effort upstream for the models in its `PROXY_MODELS` table (`gemini-4-argon-*`,
-`claude-*-*`). Every other model — including `gemini-3.8-flash-low` — was forwarded untouched, so
-requesting a low-effort model still ran at the upstream default. Asking for "low" was cosmetic.
+T3 deploys its own antigravity clip proxy shim
+(`~/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py`), and every machine runs a different
+revision of it. Two things differ:
+
+- **The effort.** The shim only sent an effort upstream for the models in its `PROXY_MODELS` table
+  (`gemini-4-argon-*`, `claude-*-*`). Every other model — including `gemini-3.8-flash-low` — was
+  forwarded untouched, so requesting a low-effort model still ran at the upstream default. Asking
+  for "low" was cosmetic. The fix derives the effort from the selected model's name suffix and
+  sends it as `generationConfig.thinkingConfig.thinkingLevel`, leaving the routed argon/claude
+  behaviour untouched.
+- **The model list.** An older revision offers `claude-opus-5-5-low`, `-medium` and `-high` as
+  three separate models. The newer one offers `claude-opus-5-5` and puts the effort next to it as
+  a thinking level selector. So the two machines did not show the same models.
+
+The repo therefore carries the known-good shim, and `patches/acp_clip_proxy_shim.py` is the file
+every machine gets:
 
 ```bash
-./patches/apply-antigravity-effort.sh            # patches the deployed shim (idempotent)
-python3 patches/apply-antigravity-effort.py       # same fix, works on any shim revision
+./patches/apply-antigravity-effort.sh            # install it on this machine (idempotent)
+python3 patches/apply-antigravity-effort.py       # same, without the wrapper
 python3 patches/test_acp_clip_proxy_shim.py       # unit self-check for the routing logic
 python3 patches/test_clip_proxy_effort.py         # integration check: forwards thinkingLevel
+python3 patches/test_antigravity_shim_install.py  # check for the installer itself
 ```
 
-Every machine runs a slightly different shim revision, so the patcher edits the code by shape
-(`class State:` plus the forward block) instead of by byte offset, and refuses to touch a file it
-does not recognise. `antigravity-clip-effort.patch` is the raw diff for the macOS revision.
+`install.sh` runs the installer for you, and `--check` reports the shim on the machines that have
+one. The installer replaces an older revision with the known-good file, keeps a `.bak-<timestamp>`
+of what was there, and refuses to touch a file it does not recognise. It never downgrades a newer
+shim: a revision this repo does not carry is left alone and only gets the effort fix, edited by
+shape (`class State:` plus the forward block) instead of by byte offset.
+`antigravity-clip-effort.patch` is the raw diff for the macOS revision.
 
-The patch derives the effort from the selected model's name suffix and sends it as
-`generationConfig.thinkingConfig.thinkingLevel`, leaving the routed argon/claude behaviour
-untouched. New provider sessions pick it up — no T3 restart needed.
+New provider sessions pick it up — no T3 restart needed.
 
 ## Provider-level fix: force sending a message broke the thread
 

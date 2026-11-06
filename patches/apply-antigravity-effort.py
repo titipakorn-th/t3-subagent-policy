@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Apply the subagent effort fix to T3's antigravity clip proxy shim.
+"""Install the repo's antigravity clip proxy shim, with the effort fix applied.
 
-The shim only sent an effort upstream for the models in its PROXY_MODELS table
-(argon, claude). Every other model - including gemini-3.8-flash-low - was
-forwarded untouched, so requesting a low-effort model still ran at the upstream
-default. The fix derives the effort from the selected model's name suffix.
+Two things are wrong with the shim T3 ships on a machine:
 
-Different machines run slightly different shim revisions, so this edits the code
-by shape rather than by byte offset.
+1. It only sent an effort upstream for the models in its PROXY_MODELS table
+   (argon, claude). Every other model - including gemini-3.8-flash-low - was
+   forwarded untouched, so requesting a low-effort model still ran at the upstream
+   default. The fix derives the effort from the selected model's name suffix.
+
+2. Every machine runs a different shim revision, and the revisions disagree on
+   the model list: an older one offers claude-opus-5-5-low/medium/high as three
+   separate models, a newer one offers claude-opus-5-5 and adds a thinking level
+   selector next to it. The repo carries the known-good shim so every machine
+   ends up with the same one.
+
+So this installs the known-good file over any older revision it recognises, and
+falls back to editing the code by shape for a revision it does not carry.
 
     python3 apply-antigravity-effort.py [path-to-acp_clip_proxy_shim.py]
 """
+import ast
+import hashlib
 import os
 import shutil
 import sys
@@ -18,6 +28,13 @@ import time
 
 DEFAULT = os.path.expanduser("~/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py")
 TARGET = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
+KNOWN_GOOD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "acp_clip_proxy_shim.py")
+
+# The newer revision advertises the base model names and collapses the tiers into
+# a thinking level selector. A deployed shim without these is an older revision.
+NEW_REVISION_MARKERS = ("unsuffixed_model", "GEMINI_38_TIER_MODELS",
+                        "inject_subagent_policy")
 
 HELPERS = '''
 THINKING_LEVELS = ("low", "medium", "high")
@@ -75,11 +92,44 @@ NEW_FORWARD = """                    path = path.replace(old, new, 1)
         body = self.rfile.read(length) if length else None
         body = apply_thinking_level(body, body_level)"""
 
+
+def install(target, replacement, what):
+    """Put replacement in place, keep a backup, and never leave a broken file."""
+    backup = f"{target}.bak-{time.strftime('%Y%m%dT%H%M%S')}"
+    shutil.copy2(target, backup)
+    open(target, "w").write(replacement)
+    try:
+        ast.parse(open(target).read())
+    except SyntaxError:
+        shutil.copy2(backup, target)
+        sys.exit(f"{what} does not parse; restored backup: {target}")
+    print(f"backup: {backup}")
+
+
 if not os.path.exists(TARGET):
     sys.exit(f"not found: {TARGET}")
+if not os.path.exists(KNOWN_GOOD):
+    sys.exit(f"known-good shim is missing: {KNOWN_GOOD}")
 
 src = open(TARGET).read()
+good = open(KNOWN_GOOD).read()
 
+if src == good:
+    print(f"already patched: {TARGET}")
+    sys.exit(0)
+
+if "class State:" not in src or "PROXY_MODELS" not in src:
+    sys.exit(f"unrecognised shim layout (not the clip proxy shim): {TARGET}")
+
+if not any(marker in src for marker in NEW_REVISION_MARKERS):
+    # An older revision: the known-good file replaces it exactly.
+    install(TARGET, good, "the known-good shim")
+    print(f"installed the known-good shim over an older revision: {TARGET}")
+    print("new ACP processes pick this up; restart T3 Code or open a new thread.")
+    sys.exit(0)
+
+# A revision this repo does not carry: keep it, and only make sure the effort
+# fix is in it. Downgrading a newer shim would lose whatever it added.
 if "thinking_level_for" in src:
     print(f"already patched: {TARGET}")
     sys.exit(0)
@@ -92,11 +142,6 @@ if OLD_FORWARD not in src:
 src = src.replace("\nclass State:", HELPERS, 1)
 src = src.replace(OLD_FORWARD, NEW_FORWARD, 1)
 
-backup = f"{TARGET}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
-shutil.copy2(TARGET, backup)
-open(TARGET, "w").write(src)
-
-import ast
-
-ast.parse(open(TARGET).read())
-print(f"patched: {TARGET} (backup: {backup})")
+install(TARGET, src, "the patched shim")
+print(f"patched: {TARGET}")
+print("new ACP processes pick this up; restart T3 Code or open a new thread.")
