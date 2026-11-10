@@ -173,9 +173,32 @@ every machine gets:
 python3 patches/apply-antigravity-effort.py       # same, without the wrapper
 python3 patches/test_acp_clip_proxy_shim.py       # unit self-check for the routing logic
 python3 patches/test_clip_proxy_effort.py         # integration check: forwards thinkingLevel
+python3 patches/test_acp_clip_proxy_mcp.py        # the t3-code MCP server reaches a live server
 python3 patches/test_antigravity_shim_install.py  # check for the installer itself
 python3 patches/check-antigravity-upstream.py     # can this machine reach the hub at all?
 ```
+
+### The `t3-code` MCP server must reach the right T3 Code
+
+T3 Code hands the agent its own MCP server in `session/new`, and the agent loads it before the
+first prompt. The endpoint T3 Code computes is its own HTTP server's address, and when a second T3
+Code server holds the same port the credential is refused with `401 invalid_mcp_credential`:
+
+```
+The MCP server 't3-code' failed to initialize: calling "initialize":
+T3 Code MCP endpoint responded with HTTP 401. Fix the MCP server, or remove it from your
+configuration and start a new session, to continue.
+```
+
+The port is shared whenever the desktop app and VS Code's extension host both run: the desktop app
+binds `*:3773` and VS Code binds `127.0.0.1:3773`, so loopback traffic reaches VS Code's server,
+which knows nothing about the desktop app's credential. The same happens when the desktop app moves
+to a new port after a restart and the agent still holds the old endpoint.
+
+The shim repairs this before forwarding the session: it probes the candidate addresses of that port
+with the credential it was given and keeps the one that accepts it — the desktop app's own server on
+its other addresses — so the MCP server loads against the server that issued the credential. When
+no candidate accepts it, the endpoint is left alone rather than guessed at.
 
 The shim answers the model list from its own tables, so T3 reports the provider as "ready" and
 lists its models even when the hub behind it is unreachable — and every prompt then fails. The
@@ -256,7 +279,8 @@ The antigravity checks run standalone and under pytest:
 ```bash
 python3 patches/test_acp_clip_proxy_shim.py    # unit self-check for the clip proxy
 python3 patches/test_clip_proxy_effort.py      # the effort really reaches the upstream
-pytest patches/test_acp_clip_proxy_shim.py patches/test_clip_proxy_effort.py
+python3 patches/test_acp_clip_proxy_mcp.py     # the t3-code MCP server reaches a live server
+pytest patches/test_acp_clip_proxy_shim.py patches/test_clip_proxy_effort.py patches/test_acp_clip_proxy_mcp.py
 ```
 
 If the agent keeps refusing the prompt, the proxy resends it with a growing backoff and gives up

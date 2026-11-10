@@ -11,11 +11,12 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 ARGON_MODELS = (
     "gemini-4-argon",
@@ -24,6 +25,10 @@ PROXY_ARGON_MODEL = "gemini-4-argon-high"
 PLACEHOLDER_MODEL = "gemini-3.8-flash-high"
 CONFIG_PLACEHOLDER_MODEL = "gemini-3.8-flash"
 THINKING_LEVELS = ("low", "medium", "high")
+
+T3_MCP_ENDPOINT_ENV = "T3_ACP_MCP_ENDPOINT"
+T3_MCP_AUTHORIZATION_ENV = "T3_ACP_MCP_AUTHORIZATION"
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 CLAUDE_MODELS = {
     "claude-opus-5-5": ("claude-opus-5-5-high", None),
@@ -469,6 +474,143 @@ def patch_notification(message):
     add_proxy_choices({"result": result})
 
 
+def local_addresses():
+    """This machine's non-loopback IPv4 addresses.
+
+    T3 Code publishes its MCP endpoint as the loopback address of its own HTTP
+    server, but a second T3 Code server (the VS Code extension host) can hold
+    that same loopback port. Loopback traffic then reaches the wrong server
+    and the credential is refused with 401. The server that issued the
+    credential listens on every interface, so its other addresses reach it.
+    """
+    addresses = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            host = info[4][0]
+            if not host.startswith("127.") and host not in addresses:
+                addresses.append(host)
+    except OSError:
+        pass
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("192.0.2.1", 9))
+            host = probe.getsockname()[0]
+            if not host.startswith("127.") and host not in addresses:
+                addresses.append(host)
+        finally:
+            probe.close()
+    except OSError:
+        pass
+    return addresses
+
+
+def endpoint_candidates(endpoint):
+    """The endpoint itself, then the same path on this machine's other addresses."""
+    parts = urlsplit(endpoint)
+    candidates = [endpoint]
+    if parts.hostname not in LOOPBACK_HOSTS:
+        return candidates
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    for host in local_addresses():
+        candidate = urlunsplit(
+            (parts.scheme, f"{host}:{port}", parts.path, parts.query, parts.fragment))
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def accepts_credential(endpoint, authorization, timeout=2.0):
+    """True when the endpoint accepts the credential.
+
+    A GET on the MCP endpoint answers 405 when the credential is accepted and
+    401 when it is refused, so this needs no MCP session.
+    """
+    parts = urlsplit(endpoint)
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path = f"{path}?{parts.query}"
+    try:
+        if parts.scheme == "https":
+            conn = http.client.HTTPSConnection(parts.hostname, port, timeout=timeout)
+        else:
+            conn = http.client.HTTPConnection(parts.hostname, port, timeout=timeout)
+        try:
+            conn.request("GET", path, headers={
+                "Authorization": authorization,
+                "Accept": "application/json, text/event-stream",
+            })
+            status = conn.getresponse().status
+        finally:
+            conn.close()
+    except (OSError, http.client.HTTPException):
+        return False
+    return status in (200, 405)
+
+
+_mcp_endpoints = {}
+
+
+def resolve_mcp_endpoint(endpoint, authorization):
+    """An endpoint that accepts `authorization`, or the given one unchanged.
+
+    Without this the agent loads the 't3-code' MCP server against whichever
+    server holds the loopback port, and the turn dies with
+    'The MCP server t3-code failed to initialize'.
+    """
+    if not endpoint or not authorization:
+        return endpoint
+    key = (endpoint, authorization)
+    cached = _mcp_endpoints.get(key)
+    if cached is not None:
+        return cached
+    for candidate in endpoint_candidates(endpoint):
+        if accepts_credential(candidate, authorization):
+            _mcp_endpoints[key] = candidate
+            return candidate
+    return endpoint
+
+
+def rewrite_mcp_endpoint(params):
+    """Point every T3 MCP server entry at an endpoint the credential works on."""
+    servers = params.get("mcpServers")
+    if not isinstance(servers, list):
+        return False
+    changed = False
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        if server.get("type") == "http":
+            url = server.get("url")
+            headers = server.get("headers")
+            if not isinstance(url, str) or not isinstance(headers, list):
+                continue
+            values = {h.get("name"): h.get("value") for h in headers if isinstance(h, dict)}
+            authorization = values.get("Authorization")
+            resolved = resolve_mcp_endpoint(url, authorization)
+            if resolved != url:
+                server["url"] = resolved
+                changed = True
+            continue
+        env = server.get("env")
+        if not isinstance(env, list):
+            continue
+        values = {e.get("name"): e.get("value") for e in env if isinstance(e, dict)}
+        endpoint = values.get(T3_MCP_ENDPOINT_ENV)
+        authorization = values.get(T3_MCP_AUTHORIZATION_ENV)
+        if not endpoint or not authorization:
+            continue
+        resolved = resolve_mcp_endpoint(endpoint, authorization)
+        if resolved == endpoint:
+            continue
+        for entry in env:
+            if isinstance(entry, dict) and entry.get("name") == T3_MCP_ENDPOINT_ENV:
+                entry["value"] = resolved
+        changed = True
+    return changed
+
+
 def configured_mcp_servers():
     path = os.environ.get(
         "T3_ACP_MCP_SERVERS_CONFIG",
@@ -512,6 +654,12 @@ def main():
 
     child_env = os.environ.copy()
     child_env["GOOGLE_GEMINI_BASE_URL"] = f"http://127.0.0.1:{httpd.server_port}"
+    inherited_endpoint = child_env.get(T3_MCP_ENDPOINT_ENV)
+    inherited_authorization = child_env.get(T3_MCP_AUTHORIZATION_ENV)
+    if inherited_endpoint and inherited_authorization:
+        resolved = resolve_mcp_endpoint(inherited_endpoint, inherited_authorization)
+        if resolved != inherited_endpoint:
+            child_env[T3_MCP_ENDPOINT_ENV] = resolved
     if not child_env.get("GEMINI_API_KEY"):
         proxy_key = configured_proxy_api_key()
         if proxy_key:
@@ -538,15 +686,21 @@ def main():
                 try:
                     request = json.loads(line)
                     method = request.get("method")
-                    if method in ("session/new", "session/resume"):
+                    if method in ("session/new", "session/resume", "session/load"):
                         params = request.get("params")
-                        if isinstance(params, dict) and mcp_servers:
-                            existing = params.get("mcpServers", [])
-                            if not isinstance(existing, list):
-                                existing = []
-                            names = {s.get("name") for s in existing if isinstance(s, dict)}
-                            params["mcpServers"] = existing + [s for s in mcp_servers if s["name"] not in names]
-                            forwarded = json.dumps(request, separators=(",", ":")) + "\n"
+                        if isinstance(params, dict):
+                            changed = False
+                            if mcp_servers and method in ("session/new", "session/resume"):
+                                existing = params.get("mcpServers", [])
+                                if not isinstance(existing, list):
+                                    existing = []
+                                names = {s.get("name") for s in existing if isinstance(s, dict)}
+                                params["mcpServers"] = existing + [s for s in mcp_servers if s["name"] not in names]
+                                changed = True
+                            if rewrite_mcp_endpoint(params):
+                                changed = True
+                            if changed:
+                                forwarded = json.dumps(request, separators=(",", ":")) + "\n"
                         if method == "session/new":
                             state.select(None)
                             state.set_thinking_level(None)
