@@ -191,15 +191,15 @@ T3 deploys its own antigravity clip proxy shim
 (`~/.t3/tools/antigravity-cliproxy/acp_clip_proxy_shim.py`), and every machine runs a different
 revision of it. Two things differ:
 
-- **The effort.** The shim only sent an effort upstream for the models in its `PROXY_MODELS` table
-  (`gemini-4-argon-*`, `claude-*-*`). Every other model — including `gemini-3.8-flash-low` — was
-  forwarded untouched, so requesting a low-effort model still ran at the upstream default. Asking
-  for "low" was cosmetic. The fix derives the effort from the selected model's name suffix and
-  sends it as `generationConfig.thinkingConfig.thinkingLevel`, leaving the routed argon/claude
-  behaviour untouched.
+- **The effort.** The shim sends the selected effort upstream as
+  `generationConfig.thinkingConfig.thinkingLevel`. Hydrogen exposes `low`, `medium`, `high` and
+  `xhigh`; Argon keeps its supported `low`, `medium` and `high` choices.
 - **The model list.** An older revision offers `claude-opus-5-5-low`, `-medium` and `-high` as
   three separate models. The newer one offers `claude-opus-5-5` and puts the effort next to it as
   a thinking level selector. So the two machines did not show the same models.
+
+The known-good shim exposes Gemini 4 Hydrogen through the ACP model selector. Orchestrator (Argon)
+is omitted until CLIProxyAPI advertises a route for it.
 
 The repo therefore carries the known-good shim, and `patches/acp_clip_proxy_shim.py` is the file
 every machine gets:

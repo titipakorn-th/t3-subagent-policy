@@ -2,7 +2,7 @@
 """Expose CLIProxyAPI Antigravity models through T3's ACP process.
 
 The bundled ACP server validates selected model IDs against its built-in list.
-This shim advertises Argon and Claude choices, translates their ACP selection
+This shim advertises Argon, Hydrogen and Claude choices, translates their ACP selection
 to a supported placeholder model, and rewrites only the selected model's
 Gemini API request path before forwarding it to CLIProxyAPI.
 """
@@ -21,10 +21,13 @@ from urllib.parse import urlsplit, urlunsplit
 ARGON_MODELS = (
     "gemini-4-argon",
 )
+HYDROGEN_MODELS = ("gemini-4-hydrogen",)
 PROXY_ARGON_MODEL = "gemini-4-argon-high"
+PROXY_HYDROGEN_MODEL = "gemini-4-hydrogen-xhigh"
 PLACEHOLDER_MODEL = "gemini-3.8-flash-high"
 CONFIG_PLACEHOLDER_MODEL = "gemini-3.8-flash"
 THINKING_LEVELS = ("low", "medium", "high")
+HYDROGEN_THINKING_LEVELS = (*THINKING_LEVELS, "xhigh")
 
 T3_MCP_ENDPOINT_ENV = "T3_ACP_MCP_ENDPOINT"
 T3_MCP_AUTHORIZATION_ENV = "T3_ACP_MCP_AUTHORIZATION"
@@ -34,12 +37,27 @@ CLAUDE_MODELS = {
     "claude-opus-5-5": ("claude-opus-5-5-high", None),
     "claude-sonnet-5-5": ("claude-sonnet-5-5-high", None),
 }
+MODEL_EFFORT_LEVELS = {
+    **dict.fromkeys(ARGON_MODELS, THINKING_LEVELS),
+    **dict.fromkeys(HYDROGEN_MODELS, HYDROGEN_THINKING_LEVELS),
+    **dict.fromkeys(CLAUDE_MODELS, THINKING_LEVELS),
+}
+MODEL_LEVEL_CHOICES = {
+    f"{model}-{level}"
+    for model, levels in MODEL_EFFORT_LEVELS.items()
+    for level in levels
+}
 PROXY_MODELS = {
     **{model: (PROXY_ARGON_MODEL, None) for model in ARGON_MODELS},
+    **{model: (PROXY_HYDROGEN_MODEL, None) for model in HYDROGEN_MODELS},
     **CLAUDE_MODELS,
     **{
         f"gemini-4-argon-{level}": (PROXY_ARGON_MODEL, level)
         for level in THINKING_LEVELS
+    },
+    **{
+        f"gemini-4-hydrogen-{level}": (PROXY_HYDROGEN_MODEL, level)
+        for level in HYDROGEN_THINKING_LEVELS
     },
     **{
         f"{model}-{level}": (proxy_model, level)
@@ -47,21 +65,36 @@ PROXY_MODELS = {
         for level in THINKING_LEVELS
     },
 }
-LEGACY_PROXY_MODELS = set(PROXY_MODELS) - set(ARGON_MODELS) - set(CLAUDE_MODELS)
+# T3's ACP registry driver gives a "thought_level" option only to the model that was current
+# when it probed (Flash), so other models lose it. A custom category makes it shared by all.
+SHARED_THINKING_CATEGORY = "_thinking_level"
 GEMINI_38_TIER_MODELS = {f"gemini-3.8-flash-{level}" for level in THINKING_LEVELS}
-MODEL_CHOICES = {
+MODEL_NAMES = {
+    **dict.fromkeys(ARGON_MODELS, "Gemini 4 Argon"),
+    **dict.fromkeys(HYDROGEN_MODELS, "Gemini 4 Hydrogen"),
     **{
-        model: ("Gemini 4 Argon", "Gemini 4 Argon routed through CLIProxyAPI.")
-        for model in ARGON_MODELS
-    },
-    **{
-        model: (
-            f"Claude {'Opus' if '-opus-' in model else 'Sonnet'} 5.5",
-            "Claude routed through your Antigravity quota via CLIProxyAPI.",
-        )
+        model: f"Claude {'Opus' if '-opus-' in model else 'Sonnet'} 5.5"
         for model in CLAUDE_MODELS
     },
 }
+MODEL_CHOICES = {
+    **{
+        model: (
+            name,
+            f"{name} routed through CLIProxyAPI.",
+        )
+        for model, name in MODEL_NAMES.items()
+    },
+}
+
+
+def effort_levels_for(model):
+    """Thinking levels exposed for this model."""
+    if isinstance(model, str):
+        for family, levels in MODEL_EFFORT_LEVELS.items():
+            if model == family or model.startswith(family + "-"):
+                return levels
+    return THINKING_LEVELS
 
 
 class State:
@@ -74,6 +107,8 @@ class State:
     def select(self, model):
         with self.lock:
             self.proxy_model = model
+            if self.thinking_level not in effort_levels_for(model):
+                self.thinking_level = None
 
     def selected_proxy_model(self):
         with self.lock:
@@ -81,7 +116,7 @@ class State:
 
     def set_thinking_level(self, level):
         with self.lock:
-            self.thinking_level = level if level in THINKING_LEVELS else None
+            self.thinking_level = level if level in effort_levels_for(self.proxy_model) else None
 
     def selected_thinking_level(self):
         with self.lock:
@@ -217,6 +252,15 @@ def transform_request_payload(body, level):
 state = State()
 
 
+def route_effort_option(params):
+    value = params.get("value")
+    state.set_thinking_level(value)
+    if value == "xhigh":
+        params["value"] = "high"
+        return True
+    return False
+
+
 def configured_proxy_api_key():
     for name in ("CLIPROXY_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
         value = os.environ.get(name)
@@ -264,7 +308,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         body_level = None
         if selected_model in PROXY_MODELS:
             proxy_model, default_level = PROXY_MODELS[selected_model]
-            body_level = state.selected_thinking_level() or default_level
+            selected_level = state.selected_thinking_level()
+            body_level = selected_level if selected_level in effort_levels_for(selected_model) else default_level
             new = f"/v1beta/models/{proxy_model}:"
             for placeholder in (PLACEHOLDER_MODEL, CONFIG_PLACEHOLDER_MODEL):
                 old = f"/v1beta/models/{placeholder}:"
@@ -342,7 +387,7 @@ def is_outdated_model(model):
 
 
 def unsuffixed_model(model):
-    if model in LEGACY_PROXY_MODELS or model in GEMINI_38_TIER_MODELS:
+    if model in MODEL_LEVEL_CHOICES or model in GEMINI_38_TIER_MODELS:
         return model.rsplit("-", 1)[0]
     return model
 
@@ -353,7 +398,7 @@ def filter_model_choices(choices):
         if not isinstance(choice, dict):
             filtered.append(choice)
             continue
-        if is_outdated_model(choice.get("value")) or choice.get("value") in LEGACY_PROXY_MODELS or choice.get("value") in GEMINI_38_TIER_MODELS:
+        if is_outdated_model(choice.get("value")) or choice.get("value") in GEMINI_38_TIER_MODELS or choice.get("value") in MODEL_LEVEL_CHOICES:
             continue
         nested = choice.get("options")
         if isinstance(nested, list):
@@ -393,18 +438,42 @@ def add_proxy_choices(message):
             option["currentValue"] = selected
 
     config_options = result.setdefault("configOptions", [])
-    if isinstance(config_options, list) and not any(
-        option.get("id") in ("thinking_level", "reasoning_effort")
-        for option in config_options if isinstance(option, dict)
-    ):
-        config_options.append({
-            "id": "thinking_level",
-            "name": "Thinking Level",
-            "category": "thought_level",
-            "type": "select",
-            "currentValue": "high",
-            "options": [{"value": level, "name": level.title()} for level in THINKING_LEVELS],
-        })
+    if isinstance(config_options, list):
+        selected_model = state.selected_proxy_model()
+        levels = effort_levels_for(selected_model)
+        effort_options = [
+            option for option in config_options
+            if isinstance(option, dict)
+            and option.get("id") in ("thinking_level", "reasoning_effort")
+        ]
+        if not levels:
+            config_options[:] = [
+                option for option in config_options
+                if not isinstance(option, dict)
+                or option.get("id") not in ("thinking_level", "reasoning_effort")
+            ]
+        elif effort_options:
+            options = [{"value": level, "name": level.title()} for level in levels]
+            selected_level = state.selected_thinking_level()
+            for option in effort_options:
+                option["category"] = SHARED_THINKING_CATEGORY
+                option["options"] = options
+                if selected_level in levels:
+                    option["currentValue"] = selected_level
+                elif option.get("currentValue") not in levels:
+                    option["currentValue"] = "high" if "high" in levels else levels[0]
+        else:
+            selected_level = state.selected_thinking_level()
+            config_options.append({
+                "id": "thinking_level",
+                "name": "Thinking Level",
+                "category": SHARED_THINKING_CATEGORY,
+                "type": "select",
+                "currentValue": selected_level if selected_level in levels else (
+                    "high" if "high" in levels else levels[0]
+                ),
+                "options": [{"value": level, "name": level.title()} for level in levels],
+            })
 
     # Advertise /goal command to host
     slash_commands = result.setdefault("slashCommands", [])
@@ -423,8 +492,8 @@ def add_proxy_choices(message):
                 item for item in available
                 if not isinstance(item, dict) or (
                     not is_outdated_model(item.get("modelId"))
-                    and item.get("modelId") not in LEGACY_PROXY_MODELS
                     and item.get("modelId") not in GEMINI_38_TIER_MODELS
+                    and item.get("modelId") not in MODEL_LEVEL_CHOICES
                 )
             ]
             if "currentModelId" in models:
@@ -753,7 +822,8 @@ def main():
                             config_id = params.get("configId", params.get("config_id"))
                             model_id = params.get("value")
                             if config_id in ("thinking_level", "reasoning_effort"):
-                                state.set_thinking_level(model_id)
+                                if route_effort_option(params):
+                                    forwarded = json.dumps(request, separators=(",", ":")) + "\n"
                             elif config_id == "model" and model_id in PROXY_MODELS:
                                 state.select(model_id)
                                 params["value"] = CONFIG_PLACEHOLDER_MODEL

@@ -73,6 +73,12 @@ def main():
     check("revision missing a known-good feature is replaced",
           open(older).read() == good, result.stdout.strip())
 
+    previous = os.path.join(tmp, "previous.py")
+    write(previous, good.replace("def effort_levels_for(", "def old_effort_levels_for(", 1))
+    result = run(previous)
+    check("previous model-routing revision is upgraded",
+          open(previous).read() == good, result.stdout.strip())
+
     # A file that is not the clip proxy shim at all.
     foreign = os.path.join(tmp, "foreign.py")
     write(foreign, "print('hello')\n")

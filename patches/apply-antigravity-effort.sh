@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Install the repo's antigravity clip proxy shim on this machine.
 #
-# The shim T3 ships here may be an older revision: it lists claude-*-high and
-# friends as separate models instead of offering a thinking level selector, and
-# it only sent an effort upstream for the models in its PROXY_MODELS table. The
-# repo carries the known-good shim, which fixes both.
+# The shim T3 ships here may be an older revision: the repo's known-good version
+# adds Hydrogen and its xhigh effort.
 #
 #   ./apply-antigravity-effort.sh [path-to-acp_clip_proxy_shim.py]
 set -euo pipefail

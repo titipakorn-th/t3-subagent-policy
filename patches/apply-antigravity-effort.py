@@ -14,8 +14,9 @@ Two things are wrong with the shim T3 ships on a machine:
    selector next to it. The repo carries the known-good shim so every machine
    ends up with the same one.
 
-So this installs the known-good file over any older revision it recognises, and
-falls back to editing the code by shape for a revision it does not carry.
+So this installs the known-good file over any older revision it recognises,
+including Hydrogen model support, and falls back to
+editing the code by shape for a revision it does not carry.
 
     python3 apply-antigravity-effort.py [path-to-acp_clip_proxy_shim.py]
 """

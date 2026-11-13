@@ -67,8 +67,55 @@ def test_effort_routing():
     check("bad json -> unchanged", shim.apply_thinking_level(b"not json", "low"), b"not json")
 
 
+def test_new_antigravity_models_and_efforts():
+    option = {"id": "model", "category": "model", "currentValue": "gemini-3.8-flash", "options": []}
+    response = {"result": {"configOptions": [option]}}
+
+    shim.state.select(None)
+    shim.add_proxy_choices(response)
+    models = {choice["value"]: choice for choice in option["options"]}
+    check("Argon model advertised", "gemini-4-argon" in models, True)
+    check("Hydrogen model advertised", "gemini-4-hydrogen" in models, True)
+    check("Opus model advertised", "claude-opus-5-5" in models, True)
+    check("Sonnet model advertised", "claude-sonnet-5-5" in models, True)
+    check("unavailable Orchestrator model omitted",
+          "gemini-pro-orchestrator-g1-pro" not in models, True)
+    for model, expected in (
+        ("gemini-4-argon", {"low", "medium", "high"}),
+        ("gemini-4-hydrogen", {"low", "medium", "high", "xhigh"}),
+        ("claude-opus-5-5", {"low", "medium", "high"}),
+        ("claude-sonnet-5-5", {"low", "medium", "high"}),
+    ):
+        shim.state.select(model)
+        response = {"result": {"configOptions": [{
+            "id": "model", "category": "model", "options": []
+        }]}}
+        shim.add_proxy_choices(response)
+        effort = next(
+            item for item in response["result"]["configOptions"]
+            if item.get("id") in ("thinking_level", "reasoning_effort")
+        )
+        check(f"{model} exposes its effort levels",
+              {item["value"] for item in effort["options"]} == expected, True)
+        check(f"{model} effort option is shared across models in T3",
+              effort["category"] != "thought_level", True)
+
+    shim.state.select(None)
+
+
+def test_hydrogen_xhigh_variant_maps_its_effort():
+    shim.state.select("gemini-4-hydrogen-xhigh")
+    check("xhigh variant maps to xhigh", shim.PROXY_MODELS["gemini-4-hydrogen-xhigh"][1], "xhigh")
+    check("xhigh variant uses Hydrogen effort levels",
+          shim.effort_levels_for("gemini-4-hydrogen-xhigh"),
+          ("low", "medium", "high", "xhigh"))
+    shim.state.select(None)
+
+
 def main():
     test_effort_routing()
+    test_new_antigravity_models_and_efforts()
+    test_hydrogen_xhigh_variant_maps_its_effort()
     print("\nall checks passed")
 
 

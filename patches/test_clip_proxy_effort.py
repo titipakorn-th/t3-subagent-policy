@@ -67,9 +67,10 @@ import urllib.request
 failures = []
 
 
-def probe(selected_model, expect_level):
+def probe(selected_model, expect_level, expect_path=None):
     received.clear()
     shim.state.select(selected_model)
+    shim.state.set_thinking_level(expect_level)
     body = json.dumps({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{proxy.server_port}/v1beta/models/gemini-3.8-flash-high:generateContent",
@@ -85,7 +86,13 @@ def probe(selected_model, expect_level):
     print(f"{'ok ' if ok else 'FAIL'} {selected_model}: thinkingLevel={level!r} (expected {expect_level!r})")
     if not ok:
         failures.append(selected_model)
-    print(f"     forwarded path: {received['path']}")
+    if expect_path:
+        path_ok = received["path"] == expect_path
+        print(f"{'ok ' if path_ok else 'FAIL'} path: {received['path']!r} (expected {expect_path!r})")
+        if not path_ok:
+            failures.append(selected_model + " path")
+    else:
+        print(f"     forwarded path: {received['path']}")
 
 
 def test_effort_reaches_the_upstream():
@@ -94,6 +101,10 @@ def test_effort_reaches_the_upstream():
         probe("gemini-3.8-flash-medium", "medium")
         probe("gemini-3.8-flash-high", "high")
         probe("gemini-4-argon-low", "low")
+        probe("gemini-4-hydrogen-xhigh", "xhigh",
+              "/v1beta/models/gemini-4-hydrogen-xhigh:generateContent")
+        probe("claude-opus-5-5-low", "low",
+              "/v1beta/models/claude-opus-5-5-high:generateContent")
     finally:
         proxy.shutdown()
         upstream.shutdown()
