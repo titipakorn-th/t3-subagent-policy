@@ -49,6 +49,8 @@ run
 status=$?
 [ "$status" = "0" ]
 check "install succeeds" "$?" "$(tail -3 /tmp/install-lifecycle.log | tr '\n' ' ')"
+! grep -q "pruning stale runtimes" /tmp/install-lifecycle.log
+check "install leaves runtime pruning opt-in" "$?" ""
 grep -q "patched:" /tmp/install-lifecycle.log
 check "the proxy is patched" "$?" ""
 [ -f "$FAKE/.codex/AGENTS.md" ]
@@ -67,14 +69,19 @@ status=$?
 [ "$status" = "0" ]
 check "check passes after the install" "$?" "$(tail -2 /tmp/install-lifecycle.log | tr '\n' ' ')"
 
-# 5. Uninstall: the policy goes, the proxy comes back.
+# 5. Cleanup is available only when explicitly requested.
+run --prune
+grep -q "pruning stale runtimes" /tmp/install-lifecycle.log
+check "--prune enables runtime cleanup" "$?" ""
+
+# 6. Uninstall: the policy goes, the proxy comes back.
 run --uninstall
 grep -q "reverted:" /tmp/install-lifecycle.log
 check "the proxy is reverted" "$?" ""
 grep -q "removed" /tmp/install-lifecycle.log
 check "the policy block is removed" "$?" ""
 
-# 6. Check again: the machine is back where it started.
+# 7. Check again: the machine is back where it started.
 run --check
 status=$?
 [ "$status" = "1" ]

@@ -75,6 +75,42 @@ yet, and writes a `.bak-<timestamp>` before changing anything.
 | `patches/remove-plugin.sh` | Removes a MiniMax Code plugin and stops the MCP servers it leaves behind |
 | `patches/acp_clip_proxy_shim.py` | The known-good antigravity clip proxy shim (the installer's target state) |
 | `patches/apply-antigravity-effort.py` | Installs the known-good shim, with the effort fix, over an older revision |
+| `patches/prune-stale-runtime.py` | Removes the runtimes, installer archives and scratch that every update leaves behind |
+
+## Every update leaves old runtimes behind
+
+T3 Code and MiniMax Code both keep a versioned copy of themselves on disk, and neither
+one ever throws the old copy away:
+
+| What | Where | Why it stays |
+|---|---|---|
+| Pinned CLI runtime (≈340 MB each) | `~/.t3/runtime/versions/<version>/` | T3 Code only prunes these from a `t3 update` run, and only when `~/.t3/runtime/service-state.json` exists. That file is written by a background service; a desktop-only install never has one, so the prune returns early and every old runtime survives. |
+| Installer archives | `~/Library/Caches/t3code-updater/update.zip`, `pending/*.zip` | The archive of the version that is already installed is kept after the update lands. |
+| Proxy backups | `~/.minimax-code/bin/mcode-acp-proxy.js.bak-*` | The patcher below writes one backup per run, so every patch run adds a file. |
+| Agent scratch | `~/.minimax/run/`, `~/.minimax/background-tasks/`, `~/.minimax/v2/runtime-owner-leases/` | Per-run and per-task directories from finished runs. |
+
+`patches/prune-stale-runtime.py` removes them, with the same safety rules T3 Code uses for
+its own pinned runtimes: a runtime is only removed when it is settled (not mid-install), is
+not the active version of a background service, is not referenced by a running process, and is
+not referenced by a launcher.
+
+```bash
+patches/prune-stale-runtime.py             # report only
+patches/prune-stale-runtime.py --apply     # move the leftovers to the trash
+patches/prune-stale-runtime.py --apply --permanent   # delete them outright
+patches/prune-stale-runtime.py --apply --agent-scratch   # also drop finished agent runs
+```
+
+Runtime cleanup is opt-in. Run `install.sh --prune` to move eligible leftovers to the trash;
+the default install only updates the policy and provider patches. `--no-prune` skips cleanup.
+
+The agent scratch is left out of that automatic pass on purpose: it is thousands of
+directories and the trash moves them one by one, which takes minutes. Run it by hand with
+`--agent-scratch` when you want it.
+
+Space only comes back once the Trash is emptied; use `--permanent` to skip the Trash.
+MiniMax Code keeps one release as a rollback copy by design, so `~/.minimax-code/releases/`
+holds two versions; `--keep-releases 1` drops that safety net.
 
 ## Roll out
 

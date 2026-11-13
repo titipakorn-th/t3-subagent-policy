@@ -7,18 +7,22 @@
 #   ./install.sh --check    report status, exit 1 if missing
 #   ./install.sh --uninstall remove the policy block and the proxy patch
 #   ./install.sh --print    print the policy block only
+#   ./install.sh --prune  opt in to stale-runtime cleanup
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE="install"
+PRUNE=0
 for a in "$@"; do
   case "$a" in
     --check|--uninstall|--print|--help|-h) MODE="${a#--}" ;;
+    --prune) PRUNE=1 ;;
+    --no-prune) PRUNE=0 ;;
   esac
 done
 
 if [ "$MODE" = "help" ]; then
-  echo "usage: install.sh [--check|--uninstall|--print]"
+  echo "usage: install.sh [--check|--uninstall|--print] [--prune|--no-prune]"
   exit 0
 fi
 
@@ -194,4 +198,14 @@ if [ -f "$SHIM" ] && [ -f "$SHIM_PATCHER" ]; then
   python3 "$SHIM_PATCHER" "$SHIM" || true
 else
   echo "skipped  $SHIM (missing)"
+fi
+
+# --- the stale-runtime cleanup -------------------------------------------
+# Every update leaves old runtimes and installer archives behind. This is the
+# step that stops them from piling up.
+PRUNER="$DIR/patches/prune-stale-runtime.py"
+if [ "$PRUNE" -eq 1 ] && [ -f "$PRUNER" ]; then
+  echo
+  echo "--- pruning stale runtimes and update leftovers ---"
+  python3 "$PRUNER" --apply
 fi
