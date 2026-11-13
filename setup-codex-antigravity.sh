@@ -62,7 +62,7 @@ if [[ "$INSTALL_CODEX" = "1" && -z "$CODEX_BIN" ]]; then
   fi
 fi
 
-python3 - "$CLIPROXY_CONFIG" "$CLIPROXY_BASE_URL" "$CODEX_HOME_DIR" "$T3_HOME_DIR" "$AGY_BIN_DIR" "$CODEX_BIN" "$BUNDLED_SHIM" "$INSTALL_CODEX" "$INSTALL_ANTIGRAVITY" <<'PY'
+python3 - "$CLIPROXY_CONFIG" "$CLIPROXY_BASE_URL" "$CODEX_HOME_DIR" "$T3_HOME_DIR" "$AGY_BIN_DIR" "$BUNDLED_SHIM" "$INSTALL_CODEX" "$INSTALL_ANTIGRAVITY" <<'PY'
 import datetime
 import filecmp
 import glob
@@ -73,14 +73,13 @@ import platform
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 
-config_path, base_override, codex_home, t3_home, agy_bin_dir, codex_bin, bundled_shim, install_codex, install_antigravity = sys.argv[1:]
+config_path, base_override, codex_home, t3_home, agy_bin_dir, bundled_shim, install_codex, install_antigravity = sys.argv[1:]
 install_codex = install_codex == "1"
 install_antigravity = install_antigravity == "1"
 config_path = os.path.abspath(os.path.expanduser(config_path))
@@ -172,7 +171,7 @@ if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
 # Verify the API key without printing it or the response body.
 request = urllib.request.Request(
     root_url + "/v1/models",
-    headers={"Authorization": "Bearer " + api_key},
+    headers={"X-Api-Key": api_key},
 )
 try:
     with urllib.request.urlopen(request, timeout=8) as response:
@@ -206,13 +205,6 @@ if install_codex:
     # Configure Codex without changing unrelated settings.
     os.makedirs(codex_home, exist_ok=True)
     codex_config_path = os.path.join(codex_home, "config.toml")
-    auth_path = os.path.join(codex_home, "auth.json")
-    setup_state_path = os.path.join(codex_home, ".cliproxyapi-setup-" + stamp + ".json")
-    atomic_json(setup_state_path, {
-        "timestamp": stamp,
-        "configExistedBefore": os.path.isfile(codex_config_path),
-        "authExistedBefore": os.path.isfile(auth_path),
-    }, 0o600)
     backup(codex_config_path)
     try:
         with open(codex_config_path, encoding="utf-8") as f:
@@ -225,7 +217,8 @@ if install_codex:
         'name = "CLIProxyAPI"',
         "base_url = " + json.dumps(root_url + "/v1"),
         'wire_api = "responses"',
-        "requires_openai_auth = false",
+        'http_headers = { "X-Api-Key" = ' + json.dumps(api_key) + " }",
+        "requires_openai_auth = true",
     ]) + "\n"
     section_pattern = re.compile(r"(?ms)^\[model_providers\.cliproxy\][ \t]*\n.*?(?=^\[|\Z)")
     if section_pattern.search(toml_text):
@@ -244,23 +237,6 @@ if install_codex:
     with open(codex_config_path, "w", encoding="utf-8") as f:
         f.write((top + rest).rstrip() + "\n")
     os.chmod(codex_config_path, 0o600)
-
-    # Save the API key through Codex's supported stdin login flow; back up prior auth first.
-    backup(auth_path)
-    env = os.environ.copy()
-    env["CODEX_HOME"] = codex_home
-    login = subprocess.run(
-        [codex_bin, "login", "--with-api-key"],
-        input=api_key + "\n",
-        text=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-    )
-    if login.returncode != 0:
-        raise SystemExit("Codex API-key login failed; restore the auth.json backup if needed.")
-    if os.path.isfile(auth_path):
-        os.chmod(auth_path, 0o600)
 if install_antigravity:
     # The ACP shim reads this private file and passes the key to its Antigravity child.
     secret_dir = os.path.join(t3_home, "userdata", "secrets")
@@ -415,7 +391,7 @@ if install_codex or install_antigravity:
         atomic_json(settings_path, settings, 0o600)
 
 if install_codex:
-    print("Codex configured for CLIProxyAPI; API-key auth installed.")
+    print("Codex configured for CLIProxyAPI using its X-Api-Key header.")
 if install_antigravity:
     print("Antigravity via CLIProxyAPI ACP provider configured in T3.")
 print("CLIProxyAPI endpoint verified; model count: {}.".format(model_count))
