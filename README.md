@@ -69,6 +69,7 @@ yet, and writes a `.bak-<timestamp>` before changing anything.
 | `policy.md` | Single source of truth for the policy text |
 | `install.sh` | Idempotent installer (`--check`, `--uninstall`, `--print`) |
 | `t3-acp.sh` | ACP call wrapper: live-endpoint resolution + 401 self-heal |
+| `setup-codex-antigravity.sh` | Configures Codex and Antigravity ACP for a caller-supplied CLIProxyAPI endpoint |
 | `patches/apply-mcode-acp-steer.py` | Patches the deployed mcode ACP proxy: steering, goals, system prompt |
 | `patches/mcode-acp-proxy-steer.js` | The known-good patched proxy (the patcher's target state) |
 | `patches/sync-patcher-blocks.py` | Regenerates the patcher's code blocks from the known-good proxy |
@@ -143,6 +144,13 @@ ssh user@other-host '~/t3-subagent-policy/install.sh'
 ### C. From an agent on the target machine
 
 Ask the agent on that machine to run `~/t3-subagent-policy/install.sh`.
+
+### Configure Codex and Antigravity ACP
+
+Run `./setup-codex-antigravity.sh --both` to configure both providers. Use `--codex-only` or
+`--antigravity-only` to configure one. The script prompts for the CLIProxyAPI endpoint unless you
+set `CLIPROXY_BASE_URL` in the environment. It bundles `patches/acp_clip_proxy_shim.py` and stores
+the API key in T3's private secrets directory.
 
 ## Verify on each machine
 
