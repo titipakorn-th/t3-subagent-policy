@@ -207,8 +207,9 @@ except Exception as e:
 
 stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
 def backup(path):
-    if os.path.isfile(path):
-        shutil.copy2(path, path + ".bak-" + stamp)
+    backup_path = path + ".bak-" + stamp
+    if os.path.isfile(path) and not os.path.exists(backup_path):
+        shutil.copy2(path, backup_path)
 
 def atomic_json(path, value, mode=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -224,6 +225,7 @@ def atomic_json(path, value, mode=None):
         if os.path.exists(tmp):
             os.unlink(tmp)
 
+configure_claude = False
 if install_codex:
     # Configure Codex without changing unrelated settings.
     os.makedirs(codex_home, exist_ok=True)
@@ -343,6 +345,26 @@ if install_codex:
                 "options": [{"model": model} for model in claude_models],
             }
             atomic_json(claude_settings_path, claude_settings, 0o600)
+            configure_claude = True
+            claude_model_ids = set(claude_models)
+            claude_cache_path = os.path.join(t3_home, "caches", "claudeAgent.json")
+            if os.path.isfile(claude_cache_path):
+                backup(claude_cache_path)
+                with open(claude_cache_path, encoding="utf-8") as f:
+                    claude_cache = json.load(f)
+                claude_cache["models"] = [m for m in claude_cache.get("models", []) if m.get("slug") in claude_model_ids]
+                claude_cache["checkedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+                atomic_json(claude_cache_path, claude_cache)
+            manifest_path = os.path.join(t3_home, "userdata", "model-manifest.json")
+            if os.path.isfile(manifest_path):
+                backup(manifest_path)
+                with open(manifest_path, encoding="utf-8") as f:
+                    manifest = json.load(f)
+                provider = manifest.get("manifest", {}).get("providers", {}).get("claudeAgent")
+                if isinstance(provider, dict):
+                    provider["models"] = [m for m in provider.get("models", []) if m.get("slug") in claude_model_ids]
+                    manifest["fetchedAtMs"] = int(datetime.datetime.now().timestamp() * 1000)
+                    atomic_json(manifest_path, manifest)
 if install_antigravity:
     # The ACP shim reads this private file and passes the key to its Antigravity child.
     secret_dir = os.path.join(t3_home, "userdata", "secrets")
@@ -511,6 +533,9 @@ if install_codex or install_antigravity:
             codex_instance = instances.get("codex")
             if isinstance(codex_instance, dict):
                 codex_instance.setdefault("config", {})["homePath"] = codex_home
+        if configure_claude:
+            claude_instance = instances.setdefault("claudeAgent", {})
+            claude_instance.update({"driver": "claudeAgent", "enabled": True})
         if install_antigravity:
             provider_id = "acpRegistry_antigravity_clip"
             instance = instances.setdefault(provider_id, {})
