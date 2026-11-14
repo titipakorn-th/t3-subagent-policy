@@ -338,6 +338,7 @@ if install_codex:
             if not claude_models:
                 raise SystemExit("CLIProxyAPI returned no Claude models; refusing to replace Claude's allowlist.")
             backup(claude_settings_path)
+            claude_env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "0"
             claude_settings["availableModels"] = claude_models
             claude_settings["enforceAvailableModels"] = True
             claude_settings["modelPicker"] = {
