@@ -123,16 +123,24 @@ if install_antigravity:
         release_id = json.load(f).get("releaseId")
     version_dir = os.path.join(linux_tools, "versions", str(release_id))
     server_binary = os.path.join(version_dir, "agy_acp_server.par")
+    native_server = False
     if not os.path.isfile(server_binary):
-        installed_servers = glob.glob(os.path.join(linux_tools, "versions", "*", "agy_acp_server.par"))
+        server_binary = os.path.join(version_dir, "antigravity")
+        native_server = os.path.isfile(server_binary)
+    if not os.path.isfile(server_binary):
+        installed_servers = (
+            glob.glob(os.path.join(linux_tools, "versions", "*", "agy_acp_server.par"))
+            + glob.glob(os.path.join(linux_tools, "versions", "*", "antigravity"))
+        )
         if not installed_servers:
             raise SystemExit("No installed T3 Antigravity ACP server binary was found.")
         server_binary = max(installed_servers, key=os.path.getmtime)
         version_dir = os.path.dirname(server_binary)
+        native_server = os.path.basename(server_binary) == "antigravity"
     if not os.path.isfile(shim_path) and not os.path.isfile(bundled_shim):
         raise SystemExit("The bundled patches/acp_clip_proxy_shim.py file is missing.")
-    # The ACP registry only passes --uid= on Linux builds; the macOS build rejects it and exits.
-    server_args = ["--uid="] if system == "linux" else []
+    # The legacy .par server needs --uid= on Linux; the native CLI uses `acp` instead.
+    server_args = ["--uid="] if system == "linux" and not native_server else []
 try:
     import yaml
 except ImportError:
@@ -295,19 +303,29 @@ if install_antigravity:
     T3_TOOL_ROOT={linux_tools}
     RELEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["releaseId"])' "$T3_TOOL_ROOT/active.json")"
     VERSION_DIR="$T3_TOOL_ROOT/versions/$RELEASE_ID"
-    if [ ! -x "$VERSION_DIR/agy_acp_server.par" ]; then
-      for candidate in "$T3_TOOL_ROOT"/versions/*; do
-        [ -x "$candidate/agy_acp_server.par" ] || continue
-        if [ ! -x "$VERSION_DIR/agy_acp_server.par" ] || [ "$candidate" -nt "$VERSION_DIR" ]; then
-          VERSION_DIR="$candidate"
+    SERVER_BINARY="$VERSION_DIR/agy_acp_server.par"
+    SERVER_SUBCOMMAND=()
+    if [ ! -x "$SERVER_BINARY" ]; then
+      SERVER_BINARY="$VERSION_DIR/antigravity"
+      SERVER_SUBCOMMAND=(acp)
+    fi
+    if [ ! -x "$SERVER_BINARY" ]; then
+      SERVER_BINARY=""
+      for candidate in "$T3_TOOL_ROOT"/versions/*/agy_acp_server.par "$T3_TOOL_ROOT"/versions/*/antigravity; do
+        [ -x "$candidate" ] || continue
+        if [ -z "$SERVER_BINARY" ] || [ "$candidate" -nt "$SERVER_BINARY" ]; then
+          SERVER_BINARY="$candidate"
+          if [ "${{candidate##*/}}" = "antigravity" ]; then SERVER_SUBCOMMAND=(acp); else SERVER_SUBCOMMAND=(); fi
         fi
       done
+      if [ -n "$SERVER_BINARY" ]; then VERSION_DIR="$(dirname "$SERVER_BINARY")"; fi
     fi
-    if [ ! -x "$VERSION_DIR/agy_acp_server.par" ]; then
+    if [ ! -x "$SERVER_BINARY" ]; then
       echo "no installed Antigravity ACP server found under $T3_TOOL_ROOT/versions" >&2
       exit 127
     fi
     KEEP_UID={keep_uid}
+    if [ "${{SERVER_BINARY##*/}}" = "antigravity" ]; then KEEP_UID=0; fi
     ARGS=()
     for arg in "$@"; do
       case "$arg" in
@@ -315,7 +333,7 @@ if install_antigravity:
         *) ARGS+=("$arg") ;;
       esac
     done
-    exec python3 {shim_path} "$VERSION_DIR/agy_acp_server.par" "${{ARGS[@]+"${{ARGS[@]}}"}}"
+    exec python3 {shim_path} "$SERVER_BINARY" "${{SERVER_SUBCOMMAND[@]+"${{SERVER_SUBCOMMAND[@]}}"}}" "${{ARGS[@]+"${{ARGS[@]}}"}}"
     """.format(
         agy_bin_dir=shlex.quote(agy_bin_dir),
         secret_path=shlex.quote(secret_path),
