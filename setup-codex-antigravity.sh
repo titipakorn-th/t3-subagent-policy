@@ -296,10 +296,10 @@ if install_antigravity:
     export CLIPROXY_API_KEY="$(cat {secret_path})"
     export CLIPROXY_CONFIG_PATH={config_path}
     export CLIPROXY_HUB_URL={root_url}
-    export GEMINI_HOME={gemini_home}
+    GEMINI_HOME_DIR={gemini_home}
     unset GEMINI_API_KEY
-    mkdir -p "$GEMINI_HOME/antigravity-acp"
-    printf '%s' {auth_settings} > "$GEMINI_HOME/antigravity-acp/settings.json"
+    mkdir -p "$GEMINI_HOME_DIR/antigravity-acp"
+    printf '%s' {auth_settings} > "$GEMINI_HOME_DIR/antigravity-acp/settings.json"
     T3_TOOL_ROOT={linux_tools}
     RELEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["releaseId"])' "$T3_TOOL_ROOT/active.json")"
     VERSION_DIR="$T3_TOOL_ROOT/versions/$RELEASE_ID"
@@ -307,7 +307,7 @@ if install_antigravity:
     SERVER_SUBCOMMAND=()
     if [ ! -x "$SERVER_BINARY" ]; then
       SERVER_BINARY="$VERSION_DIR/antigravity"
-      SERVER_SUBCOMMAND=(acp --app-data-dir "$GEMINI_HOME" --cli_dir_name antigravity-acp)
+      SERVER_SUBCOMMAND=(acp --app-data-dir "$GEMINI_HOME_DIR" --cli_dir_name antigravity-acp)
     fi
     if [ ! -x "$SERVER_BINARY" ]; then
       SERVER_BINARY=""
@@ -315,7 +315,7 @@ if install_antigravity:
         [ -x "$candidate" ] || continue
         if [ -z "$SERVER_BINARY" ] || [ "$candidate" -nt "$SERVER_BINARY" ]; then
           SERVER_BINARY="$candidate"
-          if [ "${{candidate##*/}}" = "antigravity" ]; then SERVER_SUBCOMMAND=(acp --app-data-dir "$GEMINI_HOME" --cli_dir_name antigravity-acp); else SERVER_SUBCOMMAND=(); fi
+          if [ "${{candidate##*/}}" = "antigravity" ]; then SERVER_SUBCOMMAND=(acp --app-data-dir "$GEMINI_HOME_DIR" --cli_dir_name antigravity-acp); else SERVER_SUBCOMMAND=(); fi
         fi
       done
       if [ -n "$SERVER_BINARY" ]; then VERSION_DIR="$(dirname "$SERVER_BINARY")"; fi
@@ -323,6 +323,12 @@ if install_antigravity:
     if [ ! -x "$SERVER_BINARY" ]; then
       echo "no installed Antigravity ACP server found under $T3_TOOL_ROOT/versions" >&2
       exit 127
+    fi
+    if [ "${{SERVER_BINARY##*/}}" = "antigravity" ]; then
+      unset GEMINI_HOME
+    else
+      export GEMINI_HOME="$GEMINI_HOME_DIR"
+      SERVER_SUBCOMMAND=()
     fi
     KEEP_UID={keep_uid}
     if [ "${{SERVER_BINARY##*/}}" = "antigravity" ]; then KEEP_UID=0; fi
