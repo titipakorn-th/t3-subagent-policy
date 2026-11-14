@@ -125,18 +125,20 @@ if install_antigravity:
     server_binary = os.path.join(version_dir, "agy_acp_server.par")
     native_server = False
     if not os.path.isfile(server_binary):
-        server_binary = os.path.join(version_dir, "antigravity")
-        native_server = os.path.isfile(server_binary)
-    if not os.path.isfile(server_binary):
-        installed_servers = (
-            glob.glob(os.path.join(linux_tools, "versions", "*", "agy_acp_server.par"))
-            + glob.glob(os.path.join(linux_tools, "versions", "*", "antigravity"))
-        )
-        if not installed_servers:
-            raise SystemExit("No installed T3 Antigravity ACP server binary was found.")
-        server_binary = max(installed_servers, key=os.path.getmtime)
-        version_dir = os.path.dirname(server_binary)
-        native_server = os.path.basename(server_binary) == "antigravity"
+        installed_servers = glob.glob(os.path.join(linux_tools, "versions", "*", "agy_acp_server.par"))
+        if installed_servers:
+            server_binary = max(installed_servers, key=os.path.getmtime)
+            version_dir = os.path.dirname(server_binary)
+        else:
+            server_binary = os.path.join(version_dir, "antigravity")
+            native_server = os.path.isfile(server_binary)
+            if not native_server:
+                installed_servers = glob.glob(os.path.join(linux_tools, "versions", "*", "antigravity"))
+                if not installed_servers:
+                    raise SystemExit("No installed T3 Antigravity ACP server binary was found.")
+                server_binary = max(installed_servers, key=os.path.getmtime)
+                version_dir = os.path.dirname(server_binary)
+                native_server = True
     if not os.path.isfile(shim_path) and not os.path.isfile(bundled_shim):
         raise SystemExit("The bundled patches/acp_clip_proxy_shim.py file is missing.")
     # The legacy .par server needs --uid= on Linux; the native CLI uses `acp` instead.
@@ -306,19 +308,29 @@ if install_antigravity:
     SERVER_BINARY="$VERSION_DIR/agy_acp_server.par"
     SERVER_SUBCOMMAND=()
     if [ ! -x "$SERVER_BINARY" ]; then
-      SERVER_BINARY="$VERSION_DIR/antigravity"
-      SERVER_SUBCOMMAND=(acp --app-data-dir . --cli_dir_name antigravity-acp)
-    fi
-    if [ ! -x "$SERVER_BINARY" ]; then
       SERVER_BINARY=""
-      for candidate in "$T3_TOOL_ROOT"/versions/*/agy_acp_server.par "$T3_TOOL_ROOT"/versions/*/antigravity; do
+      for candidate in "$T3_TOOL_ROOT"/versions/*/agy_acp_server.par; do
         [ -x "$candidate" ] || continue
         if [ -z "$SERVER_BINARY" ] || [ "$candidate" -nt "$SERVER_BINARY" ]; then
           SERVER_BINARY="$candidate"
-          if [ "${{candidate##*/}}" = "antigravity" ]; then SERVER_SUBCOMMAND=(acp --app-data-dir . --cli_dir_name antigravity-acp); else SERVER_SUBCOMMAND=(); fi
         fi
       done
-      if [ -n "$SERVER_BINARY" ]; then VERSION_DIR="$(dirname "$SERVER_BINARY")"; fi
+      if [ -z "$SERVER_BINARY" ]; then
+        SERVER_BINARY="$VERSION_DIR/antigravity"
+        SERVER_SUBCOMMAND=(acp --app-data-dir . --cli_dir_name antigravity-acp)
+        if [ ! -x "$SERVER_BINARY" ]; then
+          SERVER_BINARY=""
+          for candidate in "$T3_TOOL_ROOT"/versions/*/antigravity; do
+            [ -x "$candidate" ] || continue
+            if [ -z "$SERVER_BINARY" ] || [ "$candidate" -nt "$SERVER_BINARY" ]; then
+              SERVER_BINARY="$candidate"
+            fi
+          done
+          if [ -n "$SERVER_BINARY" ]; then VERSION_DIR="$(dirname "$SERVER_BINARY")"; fi
+        fi
+      else
+        VERSION_DIR="$(dirname "$SERVER_BINARY")"
+      fi
     fi
     if [ ! -x "$SERVER_BINARY" ]; then
       echo "no installed Antigravity ACP server found under $T3_TOOL_ROOT/versions" >&2
