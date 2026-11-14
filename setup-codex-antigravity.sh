@@ -7,6 +7,16 @@ fi
 set -euo pipefail
 
 T3_USER_HOME="${HOME:?HOME is not set}"
+if ! command -v node >/dev/null 2>&1; then
+  for node_bin in "${T3_USER_HOME}"/.nvm/versions/node/*/bin; do
+    if [[ -x "${node_bin}/node" ]]; then PATH="${node_bin}:${PATH}"; break; fi
+  done
+  export PATH
+fi
+LOCAL_LD_LIB="${T3_USER_HOME}/.local/lib/x86_64-linux-gnu"
+if [[ -d "$LOCAL_LD_LIB" ]]; then
+  export LD_LIBRARY_PATH="${LOCAL_LD_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
 CLIPROXY_CONFIG="${CLIPROXY_CONFIG:-${T3_USER_HOME}/cliproxyapi/config.yaml}"
 CLIPROXY_BASE_URL="${CLIPROXY_BASE_URL:-}"
 CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
@@ -237,6 +247,48 @@ if install_codex:
     else:
         toml_text = toml_text.rstrip() + ("\n\n" if toml_text.strip() else "") + section
 
+    # Build from Codex's metadata, but expose only model IDs this proxy serves as GPT models.
+    catalog_path = os.path.join(codex_home, "cliproxy-models.json")
+    without_catalog = re.sub(r"(?m)^model_catalog_json\s*=.*\n?", "", toml_text)
+    catalog_home = tempfile.mkdtemp(prefix=".cliproxy-codex-", dir=os.path.dirname(codex_home))
+    try:
+        os.makedirs(catalog_home, exist_ok=True)
+        with open(os.path.join(catalog_home, "config.toml"), "w", encoding="utf-8") as f:
+            f.write(without_catalog)
+        source_auth = os.path.join(codex_home, "auth.json")
+        if os.path.isfile(source_auth):
+            shutil.copy2(source_auth, os.path.join(catalog_home, "auth.json"))
+            os.chmod(os.path.join(catalog_home, "auth.json"), 0o600)
+        catalog_env = os.environ.copy()
+        catalog_env["CODEX_HOME"] = catalog_home
+        if not os.path.isfile(os.path.join(catalog_home, "auth.json")):
+            catalog_login = subprocess.run(
+                [codex_bin, "login", "--with-api-key"], input=api_key + "\n",
+                text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=catalog_env,
+            )
+            if catalog_login.returncode != 0:
+                raise SystemExit("Codex could not authenticate the temporary model catalog lookup.")
+        catalog_result = subprocess.run(
+            [codex_bin, "debug", "models"], capture_output=True, text=True, env=catalog_env
+        )
+        if catalog_result.returncode != 0:
+            raise SystemExit("Could not read Codex model metadata for the CLIProxy catalog.")
+        catalog = json.loads(catalog_result.stdout)
+        catalog["models"] = [
+            model for model in catalog.get("models", [])
+            if isinstance(model.get("slug"), str)
+            and model["slug"].startswith("gpt-")
+            and not model["slug"].startswith("gpt-image-")
+        ]
+        if not catalog["models"] or not any(m["slug"] == "gpt-6-luna" for m in catalog["models"]):
+            raise SystemExit("Codex catalog did not contain the configured GPT model.")
+        atomic_json(catalog_path, catalog, 0o600)
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        raise SystemExit("Codex returned an invalid model catalog ({}).".format(type(e).__name__))
+    finally:
+        shutil.rmtree(catalog_home, ignore_errors=True)
+    toml_text = without_catalog
+
     parts = re.split(r"(?m)(?=^\[)", toml_text, maxsplit=1)
     top = parts[0]
     rest = parts[1] if len(parts) > 1 else ""
@@ -245,6 +297,8 @@ if install_codex:
         top = re.sub(r"(?m)^model_provider\s*=.*$", model_provider_line, top, count=1)
     else:
         top = top.rstrip() + ("\n" if top.strip() else "") + model_provider_line + "\n"
+    catalog_line = "model_catalog_json = " + json.dumps(catalog_path)
+    top = top.rstrip() + "\n" + catalog_line + "\n"
     with open(codex_config_path, "w", encoding="utf-8") as f:
         f.write((top + rest).rstrip() + "\n")
     os.chmod(codex_config_path, 0o600)
@@ -265,6 +319,23 @@ if install_codex:
         raise SystemExit("Codex CLIProxy login failed; restore the auth.json backup if needed.")
     if os.path.isfile(auth_path):
         os.chmod(auth_path, 0o600)
+    # Claude's gateway discovery sees the merged proxy list; allow only real Claude IDs.
+    claude_settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+    if os.path.isfile(claude_settings_path):
+        with open(claude_settings_path, encoding="utf-8") as f:
+            claude_settings = json.load(f)
+        claude_env = claude_settings.get("env", {})
+        if isinstance(claude_env, dict) and claude_env.get("ANTHROPIC_BASE_URL", "").rstrip("/") == root_url:
+            claude_models = sorted({
+                model.get("id") for model in model_data.get("data", [])
+                if isinstance(model, dict) and isinstance(model.get("id"), str)
+                and model["id"].startswith("claude-")
+            })
+            if not claude_models:
+                raise SystemExit("CLIProxyAPI returned no Claude models; refusing to replace Claude's allowlist.")
+            backup(claude_settings_path)
+            claude_settings["availableModels"] = claude_models
+            atomic_json(claude_settings_path, claude_settings, 0o600)
 if install_antigravity:
     # The ACP shim reads this private file and passes the key to its Antigravity child.
     secret_dir = os.path.join(t3_home, "userdata", "secrets")
