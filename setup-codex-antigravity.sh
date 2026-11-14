@@ -135,14 +135,16 @@ if install_antigravity:
     server_binary = os.path.join(version_dir, "agy_acp_server.par")
     native_server = False
     if not os.path.isfile(server_binary):
-        installed_servers = glob.glob(os.path.join(linux_tools, "versions", "*", "agy_acp_server.par"))
-        if installed_servers:
-            server_binary = max(installed_servers, key=os.path.getmtime)
-            version_dir = os.path.dirname(server_binary)
+        native_binary = os.path.join(version_dir, "antigravity")
+        if os.path.isfile(native_binary):
+            server_binary = native_binary
+            native_server = True
         else:
-            server_binary = os.path.join(version_dir, "antigravity")
-            native_server = os.path.isfile(server_binary)
-            if not native_server:
+            installed_servers = glob.glob(os.path.join(linux_tools, "versions", "*", "agy_acp_server.par"))
+            if installed_servers:
+                server_binary = max(installed_servers, key=os.path.getmtime)
+                version_dir = os.path.dirname(server_binary)
+            else:
                 installed_servers = glob.glob(os.path.join(linux_tools, "versions", "*", "antigravity"))
                 if not installed_servers:
                     raise SystemExit("No installed T3 Antigravity ACP server binary was found.")
@@ -383,6 +385,10 @@ if install_antigravity:
     VERSION_DIR="$T3_TOOL_ROOT/versions/$RELEASE_ID"
     SERVER_BINARY="$VERSION_DIR/agy_acp_server.par"
     SERVER_SUBCOMMAND=()
+    if [ ! -x "$SERVER_BINARY" ] && [ -x "$VERSION_DIR/antigravity" ]; then
+      SERVER_BINARY="$VERSION_DIR/antigravity"
+      SERVER_SUBCOMMAND=(acp --app-data-dir . --cli_dir_name antigravity-acp)
+    fi
     if [ ! -x "$SERVER_BINARY" ]; then
       SERVER_BINARY=""
       for candidate in "$T3_TOOL_ROOT"/versions/*/agy_acp_server.par; do
