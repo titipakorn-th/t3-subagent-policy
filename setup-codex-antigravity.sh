@@ -307,7 +307,7 @@ if install_antigravity:
     SERVER_SUBCOMMAND=()
     if [ ! -x "$SERVER_BINARY" ]; then
       SERVER_BINARY="$VERSION_DIR/antigravity"
-      SERVER_SUBCOMMAND=(acp)
+      SERVER_SUBCOMMAND=(acp --app-data-dir "$GEMINI_HOME" --cli-dir-name antigravity-acp --gemini-dir "$GEMINI_HOME")
     fi
     if [ ! -x "$SERVER_BINARY" ]; then
       SERVER_BINARY=""
@@ -315,7 +315,7 @@ if install_antigravity:
         [ -x "$candidate" ] || continue
         if [ -z "$SERVER_BINARY" ] || [ "$candidate" -nt "$SERVER_BINARY" ]; then
           SERVER_BINARY="$candidate"
-          if [ "${{candidate##*/}}" = "antigravity" ]; then SERVER_SUBCOMMAND=(acp); else SERVER_SUBCOMMAND=(); fi
+          if [ "${{candidate##*/}}" = "antigravity" ]; then SERVER_SUBCOMMAND=(acp --app-data-dir "$GEMINI_HOME" --cli-dir-name antigravity-acp --gemini-dir "$GEMINI_HOME"); else SERVER_SUBCOMMAND=(); fi
         fi
       done
       if [ -n "$SERVER_BINARY" ]; then VERSION_DIR="$(dirname "$SERVER_BINARY")"; fi
