@@ -335,6 +335,11 @@ if install_codex:
                 raise SystemExit("CLIProxyAPI returned no Claude models; refusing to replace Claude's allowlist.")
             backup(claude_settings_path)
             claude_settings["availableModels"] = claude_models
+            claude_settings["enforceAvailableModels"] = True
+            claude_settings["modelPicker"] = {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": model} for model in claude_models],
+            }
             atomic_json(claude_settings_path, claude_settings, 0o600)
 if install_antigravity:
     # The ACP shim reads this private file and passes the key to its Antigravity child.
