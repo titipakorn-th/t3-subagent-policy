@@ -62,7 +62,7 @@ if [[ "$INSTALL_CODEX" = "1" && -z "$CODEX_BIN" ]]; then
   fi
 fi
 
-python3 - "$CLIPROXY_CONFIG" "$CLIPROXY_BASE_URL" "$CODEX_HOME_DIR" "$T3_HOME_DIR" "$AGY_BIN_DIR" "$BUNDLED_SHIM" "$INSTALL_CODEX" "$INSTALL_ANTIGRAVITY" <<'PY'
+python3 - "$CLIPROXY_CONFIG" "$CLIPROXY_BASE_URL" "$CODEX_HOME_DIR" "$T3_HOME_DIR" "$AGY_BIN_DIR" "$CODEX_BIN" "$BUNDLED_SHIM" "$INSTALL_CODEX" "$INSTALL_ANTIGRAVITY" <<'PY'
 import datetime
 import filecmp
 import glob
@@ -73,13 +73,14 @@ import platform
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 
-config_path, base_override, codex_home, t3_home, agy_bin_dir, bundled_shim, install_codex, install_antigravity = sys.argv[1:]
+config_path, base_override, codex_home, t3_home, agy_bin_dir, codex_bin, bundled_shim, install_codex, install_antigravity = sys.argv[1:]
 install_codex = install_codex == "1"
 install_antigravity = install_antigravity == "1"
 config_path = os.path.abspath(os.path.expanduser(config_path))
@@ -237,6 +238,23 @@ if install_codex:
     with open(codex_config_path, "w", encoding="utf-8") as f:
         f.write((top + rest).rstrip() + "\n")
     os.chmod(codex_config_path, 0o600)
+
+    auth_path = os.path.join(codex_home, "auth.json")
+    backup(auth_path)
+    env = os.environ.copy()
+    env["CODEX_HOME"] = codex_home
+    login = subprocess.run(
+        [codex_bin, "login", "--with-api-key"],
+        input=api_key + "\n",
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )
+    if login.returncode != 0:
+        raise SystemExit("Codex CLIProxy login failed; restore the auth.json backup if needed.")
+    if os.path.isfile(auth_path):
+        os.chmod(auth_path, 0o600)
 if install_antigravity:
     # The ACP shim reads this private file and passes the key to its Antigravity child.
     secret_dir = os.path.join(t3_home, "userdata", "secrets")
@@ -391,7 +409,7 @@ if install_codex or install_antigravity:
         atomic_json(settings_path, settings, 0o600)
 
 if install_codex:
-    print("Codex configured for CLIProxyAPI using its X-Api-Key header.")
+    print("Codex configured for CLIProxyAPI with X-Api-Key and CLI login.")
 if install_antigravity:
     print("Antigravity via CLIProxyAPI ACP provider configured in T3.")
 print("CLIProxyAPI endpoint verified; model count: {}.".format(model_count))
