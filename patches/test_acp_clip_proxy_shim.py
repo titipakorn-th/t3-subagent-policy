@@ -112,10 +112,98 @@ def test_hydrogen_xhigh_variant_maps_its_effort():
     shim.state.select(None)
 
 
+def test_subagent_tool_filtering_and_policy():
+    raw_body = json.dumps({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "systemInstruction": {
+            "parts": [
+                {"text": "Base instructions.\n<subagents>\n## Invoking Subagents\nUse invoke_subagent\n</subagents>\nEnd base."}
+            ]
+        },
+        "tools": [
+            {
+                "functionDeclarations": [
+                    {"name": "invoke_subagent", "description": "old subagent"},
+                    {"name": "define_subagent", "description": "old define"},
+                    {"name": "manage_subagents", "description": "old manage"},
+                    {"name": "call_mcp_tool", "description": "mcp tool"},
+                    {"name": "run_command", "description": "run command"}
+                ]
+            }
+        ]
+    }).encode("utf-8")
+
+    transformed = json.loads(shim.transform_request_payload(raw_body, "medium"))
+    decls = transformed["tools"][0]["functionDeclarations"]
+    tool_names = [d["name"] for d in decls]
+    check("invoke_subagent removed from tools", "invoke_subagent" in tool_names, False)
+    check("define_subagent removed from tools", "define_subagent" in tool_names, False)
+    check("manage_subagents removed from tools", "manage_subagents" in tool_names, False)
+    check("call_mcp_tool kept in tools", "call_mcp_tool" in tool_names, True)
+    check("run_command kept in tools", "run_command" in tool_names, True)
+
+    sys_text = "\n".join(p.get("text", "") for p in transformed["systemInstruction"]["parts"])
+    check("<subagents> block stripped", "<subagents>" in sys_text, False)
+    check("[MANDATORY SUBAGENT DIRECTIVE] injected", "[MANDATORY SUBAGENT DIRECTIVE]" in sys_text, True)
+    check("directive mentions delegate_task", "delegate_task" in sys_text, True)
+    check("directive mentions call_mcp_tool", "call_mcp_tool" in sys_text, True)
+
+
+def test_subagent_function_call_rewriting():
+    fc_data = {
+        "candidates": [{
+            "content": {
+                "parts": [{
+                    "functionCall": {
+                        "name": "invoke_subagent",
+                        "args": {
+                            "Subagents": [{
+                                "Prompt": "Search repo for tests",
+                                "Role": "Codebase Researcher",
+                                "TypeName": "research"
+                            }]
+                        }
+                    }
+                }]
+            }
+        }]
+    }
+    check("rewrite invoke_subagent triggers", shim.rewrite_subagent_fc(fc_data), True)
+    rewritten_fc = fc_data["candidates"][0]["content"]["parts"][0]["functionCall"]
+    check("fc name rewritten to call_mcp_tool", rewritten_fc["name"], "call_mcp_tool")
+    check("ServerName is t3-code", rewritten_fc["args"]["ServerName"], "t3-code")
+    check("ToolName is delegate_task", rewritten_fc["args"]["ToolName"], "delegate_task")
+    check("Arguments task", rewritten_fc["args"]["Arguments"]["task"], "Search repo for tests")
+    check("Arguments role", rewritten_fc["args"]["Arguments"]["role"], "research")
+
+    # Also check direct delegate_task function call
+    dt_data = {
+        "candidates": [{
+            "content": {
+                "parts": [{
+                    "functionCall": {
+                        "name": "delegate_task",
+                        "args": {
+                            "task": "Direct delegate",
+                            "role": "implementation"
+                        }
+                    }
+                }]
+            }
+        }]
+    }
+    check("rewrite delegate_task triggers", shim.rewrite_subagent_fc(dt_data), True)
+    rewritten_dt = dt_data["candidates"][0]["content"]["parts"][0]["functionCall"]
+    check("dt name rewritten to call_mcp_tool", rewritten_dt["name"], "call_mcp_tool")
+    check("dt Arguments task", rewritten_dt["args"]["Arguments"]["task"], "Direct delegate")
+
+
 def main():
     test_effort_routing()
     test_new_antigravity_models_and_efforts()
     test_hydrogen_xhigh_variant_maps_its_effort()
+    test_subagent_tool_filtering_and_policy()
+    test_subagent_function_call_rewriting()
     print("\nall checks passed")
 
 

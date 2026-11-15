@@ -166,9 +166,59 @@ def apply_thinking_level(body, level):
 SUBAGENT_DELEGATION_POLICY = (
     "\n\n[MANDATORY SUBAGENT DIRECTIVE]\n"
     "When asked to spawn or run a subagent, delegate, or child agent, DO NOT use internal "
-    "`invoke_subagent`. ALWAYS use T3 Code's orchestrator tool `delegate_task` so that the "
-    "child thread and task appear in the T3 Code UI and sidebar."
+    "subagent tools (they are disabled). ALWAYS use T3 Code's orchestrator tool `delegate_task` "
+    "via `call_mcp_tool` with:\n"
+    "- ServerName: \"t3-code\"\n"
+    "- ToolName: \"delegate_task\"\n"
+    "- Arguments: {\"task\": \"<detailed task prompt>\", \"title\": \"<short task title>\", \"role\": \"<implementation|research|review|test|general>\", \"mode\": \"wait\"}\n"
+    "- toolAction: \"Delegating subagent\"\n"
+    "- toolSummary: \"Delegate task to T3\"\n"
+    "This ensures the child thread and task appear in the T3 Code UI and sidebar."
 )
+
+INTERNAL_SUBAGENT_TOOLS = {
+    "invoke_subagent",
+    "define_subagent",
+    "manage_subagents",
+    "default_api:invoke_subagent",
+    "default_api:define_subagent",
+    "default_api:manage_subagents",
+}
+
+
+def remove_internal_subagents(payload):
+    """Remove internal subagent tools from tools.functionDeclarations so the model cannot spawn un-tracked subagents."""
+    if not isinstance(payload, dict):
+        return
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return
+    for tool_group in tools:
+        if not isinstance(tool_group, dict):
+            continue
+        decls = tool_group.get("functionDeclarations")
+        if isinstance(decls, list):
+            tool_group["functionDeclarations"] = [
+                d for d in decls
+                if not isinstance(d, dict) or d.get("name") not in INTERNAL_SUBAGENT_TOOLS
+            ]
+
+
+def clean_subagents_from_system_instruction(payload):
+    """Remove <subagents>...</subagents> instructions that promote invoke_subagent."""
+    if not isinstance(payload, dict):
+        return
+    sys_inst = payload.get("systemInstruction")
+    if not isinstance(sys_inst, dict):
+        return
+    parts = sys_inst.get("parts")
+    if not isinstance(parts, list):
+        return
+    for part in parts:
+        if isinstance(part, dict) and "text" in part:
+            text = part["text"]
+            if "<subagents>" in text and "</subagents>" in text:
+                part["text"] = re.sub(r"<subagents>.*?</subagents>", "", text, flags=re.DOTALL)
 
 
 def build_goal_policy(goal_text):
@@ -218,9 +268,13 @@ def inject_subagent_policy(body):
     if body is None:
         return body
     try:
-        payload = json.loads(body)
+        is_dict = isinstance(body, dict)
+        payload = body if is_dict else json.loads(body)
         if not isinstance(payload, dict) or "contents" not in payload:
             return body
+
+        clean_subagents_from_system_instruction(payload)
+        remove_internal_subagents(payload)
 
         sys_inst = payload.setdefault("systemInstruction", {})
         if not isinstance(sys_inst, dict):
@@ -229,15 +283,87 @@ def inject_subagent_policy(body):
         if not isinstance(parts, list):
             return body
 
-        # Check if policy already present to prevent duplicate injections
         for part in parts:
             if isinstance(part, dict) and "[MANDATORY SUBAGENT DIRECTIVE]" in part.get("text", ""):
-                return body
+                part["text"] = SUBAGENT_DELEGATION_POLICY
+                return payload if is_dict else json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
         parts.append({"text": SUBAGENT_DELEGATION_POLICY})
-        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return payload if is_dict else json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     except (TypeError, ValueError):
         return body
+
+
+def rewrite_subagent_fc(data):
+    """Rewrite any invoke_subagent or delegate_task function call into call_mcp_tool."""
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list):
+        return False
+    changed = False
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            fc = part.get("functionCall")
+            if not isinstance(fc, dict):
+                continue
+            name = fc.get("name")
+            if name in ("invoke_subagent", "default_api:invoke_subagent"):
+                args = fc.get("args") or {}
+                subagents = args.get("Subagents") or []
+                sub = subagents[0] if isinstance(subagents, list) and subagents else {}
+                prompt = sub.get("Prompt", "") if isinstance(sub, dict) else ""
+                role_str = (sub.get("Role") or "general").lower() if isinstance(sub, dict) else "general"
+                role = "research" if "research" in role_str else ("review" if "review" in role_str else "implementation")
+                fc["name"] = "call_mcp_tool"
+                fc["args"] = {
+                    "ServerName": "t3-code",
+                    "ToolName": "delegate_task",
+                    "Arguments": {
+                        "task": prompt,
+                        "title": (sub.get("Role") or "Subagent Task") if isinstance(sub, dict) else "Subagent Task",
+                        "role": role,
+                        "mode": "wait",
+                    },
+                    "toolAction": "Delegating subagent",
+                    "toolSummary": "Delegate task to T3",
+                }
+                changed = True
+            elif name in ("delegate_task", "default_api:delegate_task"):
+                args = fc.get("args") or {}
+                fc["name"] = "call_mcp_tool"
+                fc["args"] = {
+                    "ServerName": "t3-code",
+                    "ToolName": "delegate_task",
+                    "Arguments": args,
+                    "toolAction": "Delegating subagent",
+                    "toolSummary": "Delegate task to T3",
+                }
+                changed = True
+    return changed
+
+
+def rewrite_sse_chunk(line_text):
+    if not line_text.startswith("data:"):
+        return line_text
+    data_str = line_text[5:].strip()
+    if not data_str or data_str == "[DONE]":
+        return line_text
+    try:
+        data = json.loads(data_str)
+        if rewrite_subagent_fc(data):
+            return "data: " + json.dumps(data, separators=(",", ":"), ensure_ascii=False) + "\n\n"
+    except Exception:
+        pass
+    return line_text
 
 
 def transform_request_payload(body, level):
@@ -343,16 +469,43 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             if self.command != "HEAD":
+                sse_buffer = ""
                 while True:
                     chunk = response.read1(65536)
                     if not chunk:
                         break
-                    if content_length is None:
-                        self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
-                        self.wfile.write(chunk + b"\r\n")
+                    chunk_text = chunk.decode("utf-8", errors="replace")
+                    if "data:" in chunk_text or sse_buffer:
+                        combined = sse_buffer + chunk_text
+                        lines = combined.split("\n\n")
+                        sse_buffer = lines.pop()
+                        out_chunks = []
+                        for block in lines:
+                            out_chunks.append(rewrite_sse_chunk(block) if "data:" in block else (block + "\n\n"))
+                        out_bytes = "".join(out_chunks).encode("utf-8")
+                        if out_bytes:
+                            if content_length is None:
+                                self.wfile.write(f"{len(out_bytes):X}\r\n".encode("ascii"))
+                                self.wfile.write(out_bytes + b"\r\n")
+                            else:
+                                self.wfile.write(out_bytes)
+                            self.wfile.flush()
                     else:
-                        self.wfile.write(chunk)
-                    self.wfile.flush()
+                        if content_length is None:
+                            self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
+                            self.wfile.write(chunk + b"\r\n")
+                        else:
+                            self.wfile.write(chunk)
+                        self.wfile.flush()
+                if sse_buffer:
+                    trailing = (rewrite_sse_chunk(sse_buffer) if "data:" in sse_buffer else sse_buffer).encode("utf-8")
+                    if trailing:
+                        if content_length is None:
+                            self.wfile.write(f"{len(trailing):X}\r\n".encode("ascii"))
+                            self.wfile.write(trailing + b"\r\n")
+                        else:
+                            self.wfile.write(trailing)
+                        self.wfile.flush()
                 if content_length is None:
                     self.wfile.write(b"0\r\n\r\n")
                     self.wfile.flush()
