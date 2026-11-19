@@ -18,12 +18,31 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, urlunsplit
 
-ARGON_MODELS = (
-    "gemini-4-argon",
-)
+ARGON_MODELS = ("gemini-4-argon",)
 HYDROGEN_MODELS = ("gemini-4-hydrogen",)
+ORCHESTRATOR_MODELS = ("gemini-pro-orchestrator-g1-pro",)
+FLASH_MODELS = ("gemini-3.8-flash",)
+CLAUDE_MODELS = {
+    "claude-opus-5-5": ("claude-opus-5-5-high", None),
+    "claude-sonnet-5-5": ("claude-sonnet-5-5-high", None),
+}
+GPT_OSS_MODELS = ("gpt-oss-120b-medium",)
+
+ALL_MANAGED_MODELS = (
+    *ARGON_MODELS,
+    *HYDROGEN_MODELS,
+    *ORCHESTRATOR_MODELS,
+    *FLASH_MODELS,
+    *CLAUDE_MODELS.keys(),
+    *GPT_OSS_MODELS,
+)
+
 PROXY_ARGON_MODEL = "gemini-4-argon-high"
 PROXY_HYDROGEN_MODEL = "gemini-4-hydrogen-xhigh"
+PROXY_ORCHESTRATOR_MODEL = "gemini-4-argon-high"
+PROXY_FLASH_MODEL = "gemini-3.8-flash"
+PROXY_GPT_OSS_MODEL = "gpt-oss-120b-medium"
+
 PLACEHOLDER_MODEL = "gemini-3.8-flash-high"
 CONFIG_PLACEHOLDER_MODEL = "gemini-3.8-flash"
 THINKING_LEVELS = ("low", "medium", "high")
@@ -33,14 +52,13 @@ T3_MCP_ENDPOINT_ENV = "T3_ACP_MCP_ENDPOINT"
 T3_MCP_AUTHORIZATION_ENV = "T3_ACP_MCP_AUTHORIZATION"
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
-CLAUDE_MODELS = {
-    "claude-opus-5-5": ("claude-opus-5-5-high", None),
-    "claude-sonnet-5-5": ("claude-sonnet-5-5-high", None),
-}
 MODEL_EFFORT_LEVELS = {
     **dict.fromkeys(ARGON_MODELS, THINKING_LEVELS),
     **dict.fromkeys(HYDROGEN_MODELS, HYDROGEN_THINKING_LEVELS),
+    **dict.fromkeys(ORCHESTRATOR_MODELS, HYDROGEN_THINKING_LEVELS),
+    **dict.fromkeys(FLASH_MODELS, THINKING_LEVELS),
     **dict.fromkeys(CLAUDE_MODELS, THINKING_LEVELS),
+    **dict.fromkeys(GPT_OSS_MODELS, THINKING_LEVELS),
 }
 MODEL_LEVEL_CHOICES = {
     f"{model}-{level}"
@@ -48,16 +66,31 @@ MODEL_LEVEL_CHOICES = {
     for level in levels
 }
 PROXY_MODELS = {
-    **{model: (PROXY_ARGON_MODEL, None) for model in ARGON_MODELS},
-    **{model: (PROXY_HYDROGEN_MODEL, None) for model in HYDROGEN_MODELS},
+    "gemini-4-argon": (PROXY_ARGON_MODEL, None),
+    "gemini-4-hydrogen": (PROXY_HYDROGEN_MODEL, None),
+    "gemini-pro-orchestrator-g1-pro": (PROXY_ORCHESTRATOR_MODEL, None),
+    "gemini-3.8-flash": (PROXY_FLASH_MODEL, None),
+    "gpt-oss-120b-medium": (PROXY_GPT_OSS_MODEL, None),
     **CLAUDE_MODELS,
     **{
         f"gemini-4-argon-{level}": (PROXY_ARGON_MODEL, level)
         for level in THINKING_LEVELS
     },
     **{
-        f"gemini-4-hydrogen-{level}": (PROXY_HYDROGEN_MODEL, level)
+        f"gemini-4-hydrogen-{level}": (f"gemini-4-hydrogen-{level}", level)
         for level in HYDROGEN_THINKING_LEVELS
+    },
+    **{
+        f"gemini-pro-orchestrator-g1-pro-{level}": (PROXY_ORCHESTRATOR_MODEL, level)
+        for level in HYDROGEN_THINKING_LEVELS
+    },
+    **{
+        f"gemini-3.8-flash-{level}": (f"gemini-3.8-flash-{level}" if level == "high" else PROXY_FLASH_MODEL, level)
+        for level in THINKING_LEVELS
+    },
+    **{
+        f"gpt-oss-120b-medium-{level}": (PROXY_GPT_OSS_MODEL, level)
+        for level in THINKING_LEVELS
     },
     **{
         f"{model}-{level}": (proxy_model, level)
@@ -65,26 +98,26 @@ PROXY_MODELS = {
         for level in THINKING_LEVELS
     },
 }
+
 # T3's ACP registry driver gives a "thought_level" option only to the model that was current
 # when it probed (Flash), so other models lose it. A custom category makes it shared by all.
 SHARED_THINKING_CATEGORY = "_thinking_level"
 GEMINI_38_TIER_MODELS = {f"gemini-3.8-flash-{level}" for level in THINKING_LEVELS}
 MODEL_NAMES = {
-    **dict.fromkeys(ARGON_MODELS, "Gemini 4 Argon"),
-    **dict.fromkeys(HYDROGEN_MODELS, "Gemini 4 Hydrogen"),
-    **{
-        model: f"Claude {'Opus' if '-opus-' in model else 'Sonnet'} 5.5"
-        for model in CLAUDE_MODELS
-    },
+    "gemini-4-argon": "Gemini 4 Argon",
+    "gemini-4-hydrogen": "Gemini 4 Hydrogen",
+    "gemini-pro-orchestrator-g1-pro": "Orchestrator (Argon)",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
+    "claude-opus-5-5": "Claude Opus 5.5",
+    "claude-sonnet-5-5": "Claude Sonnet 5.5",
+    "gpt-oss-120b-medium": "GPT-OSS 120B (Medium)",
 }
 MODEL_CHOICES = {
-    **{
-        model: (
-            name,
-            f"{name} routed through CLIProxyAPI.",
-        )
-        for model, name in MODEL_NAMES.items()
-    },
+    model: (
+        name,
+        f"{name} routed through CLIProxyAPI.",
+    )
+    for model, name in MODEL_NAMES.items()
 }
 
 
@@ -100,15 +133,16 @@ def effort_levels_for(model):
 class State:
     def __init__(self):
         self.lock = threading.Lock()
-        self.proxy_model = None
-        self.thinking_level = None
+        self.proxy_model = "gemini-4-argon"
+        self.thinking_level = "medium"
         self.active_goal = None
 
     def select(self, model):
         with self.lock:
-            self.proxy_model = model
-            if self.thinking_level not in effort_levels_for(model):
-                self.thinking_level = None
+            if model:
+                self.proxy_model = model
+                if self.thinking_level not in effort_levels_for(model):
+                    self.thinking_level = None
 
     def selected_proxy_model(self):
         with self.lock:
@@ -430,20 +464,32 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _forward(self):
         upstream = urlsplit(self.upstream)
         path = self.path
-        selected_model = state.selected_proxy_model()
+        selected_model = state.selected_proxy_model() or "gemini-4-argon"
         body_level = None
+        proxy_model = None
         if selected_model in PROXY_MODELS:
             proxy_model, default_level = PROXY_MODELS[selected_model]
             selected_level = state.selected_thinking_level()
             body_level = selected_level if selected_level in effort_levels_for(selected_model) else default_level
+            if selected_model.startswith("gemini-4-hydrogen") and body_level in HYDROGEN_THINKING_LEVELS:
+                proxy_model = f"gemini-4-hydrogen-{body_level}"
+            elif selected_model.startswith("gemini-3.8-flash") and body_level == "high":
+                proxy_model = "gemini-3.8-flash-high"
+        else:
+            body_level = state.selected_thinking_level() or thinking_level_for(selected_model)
+        if proxy_model:
             new = f"/v1beta/models/{proxy_model}:"
+            replaced = False
             for placeholder in (PLACEHOLDER_MODEL, CONFIG_PLACEHOLDER_MODEL):
                 old = f"/v1beta/models/{placeholder}:"
                 if old in path:
                     path = path.replace(old, new, 1)
+                    replaced = True
                     break
-        else:
-            body_level = state.selected_thinking_level() or thinking_level_for(selected_model)
+            if not replaced and "/v1beta/models/" in path and ":" in path:
+                prefix, sep, rest = path.partition("/v1beta/models/")
+                model_in_path, sep2, after = rest.partition(":")
+                path = f"{prefix}/v1beta/models/{proxy_model}:{after}"
         length = int(self.headers.get("Content-Length", "0") or 0)
         body = self.rfile.read(length) if length else None
         body = transform_request_payload(body, body_level)
@@ -531,6 +577,7 @@ def is_outdated_model(model):
     model = model.lower()
     return (
         model.startswith("gemini-3.1-pro")
+        or "neon" in model
         or (
             model.startswith("gemini-")
             and "flash" in model
@@ -585,7 +632,7 @@ def add_proxy_choices(message):
                 })
         # The child echoes the placeholder model back; report the model the user actually picked.
         selected = state.selected_proxy_model()
-        if (selected in PROXY_MODELS or thinking_level_for(selected)) and any(
+        if selected and any(
             choice.get("value") == selected for choice in choices if isinstance(choice, dict)
         ):
             option["currentValue"] = selected
@@ -597,16 +644,16 @@ def add_proxy_choices(message):
         effort_options = [
             option for option in config_options
             if isinstance(option, dict)
-            and option.get("id") in ("thinking_level", "reasoning_effort")
+            and option.get("id") in ("thinking_level", "reasoning_effort", "thought_level")
         ]
         if not levels:
             config_options[:] = [
                 option for option in config_options
                 if not isinstance(option, dict)
-                or option.get("id") not in ("thinking_level", "reasoning_effort")
+                or option.get("id") not in ("thinking_level", "reasoning_effort", "thought_level")
             ]
         elif effort_options:
-            options = [{"value": level, "name": level.title()} for level in levels]
+            options = [{"value": level, "name": "Extra" if level == "xhigh" else level.title()} for level in levels]
             selected_level = state.selected_thinking_level()
             for option in effort_options:
                 option["category"] = SHARED_THINKING_CATEGORY
@@ -614,7 +661,7 @@ def add_proxy_choices(message):
                 if selected_level in levels:
                     option["currentValue"] = selected_level
                 elif option.get("currentValue") not in levels:
-                    option["currentValue"] = "high" if "high" in levels else levels[0]
+                    option["currentValue"] = "medium" if "medium" in levels else ("high" if "high" in levels else levels[0])
         else:
             selected_level = state.selected_thinking_level()
             config_options.append({
@@ -623,9 +670,9 @@ def add_proxy_choices(message):
                 "category": SHARED_THINKING_CATEGORY,
                 "type": "select",
                 "currentValue": selected_level if selected_level in levels else (
-                    "high" if "high" in levels else levels[0]
+                    "medium" if "medium" in levels else ("high" if "high" in levels else levels[0])
                 ),
-                "options": [{"value": level, "name": level.title()} for level in levels],
+                "options": [{"value": level, "name": "Extra" if level == "xhigh" else level.title()} for level in levels],
             })
 
     # Advertise /goal command to host
@@ -657,6 +704,9 @@ def add_proxy_choices(message):
                         "modelId": model,
                         "name": name,
                     })
+            selected = state.selected_proxy_model()
+            if selected and any(isinstance(item, dict) and item.get("modelId") == selected for item in available):
+                models["currentModelId"] = selected
 
 
 def patch_notification(message):
@@ -961,32 +1011,35 @@ def main():
                         params = request.get("params")
                         if isinstance(params, dict):
                             model_id = params.get("modelId")
-                            if model_id in PROXY_MODELS:
+                            if model_id in PROXY_MODELS or model_id in ALL_MANAGED_MODELS:
                                 state.select(model_id)
                                 params["modelId"] = PLACEHOLDER_MODEL
                                 forwarded = json.dumps(request, separators=(",", ":")) + "\n"
                             elif thinking_level_for(model_id):
                                 state.select(model_id)
+                                params["modelId"] = PLACEHOLDER_MODEL
+                                forwarded = json.dumps(request, separators=(",", ":")) + "\n"
                             else:
-                                state.select(None)
+                                state.select(model_id)
                     elif request.get("method") == "session/set_config_option":
                         params = request.get("params")
                         if isinstance(params, dict):
                             config_id = params.get("configId", params.get("config_id"))
                             model_id = params.get("value")
-                            if config_id in ("thinking_level", "reasoning_effort"):
+                            if config_id in ("thinking_level", "reasoning_effort", "thought_level"):
                                 if route_effort_option(params):
                                     forwarded = json.dumps(request, separators=(",", ":")) + "\n"
-                            elif config_id == "model" and model_id in PROXY_MODELS:
-                                state.select(model_id)
-                                params["value"] = CONFIG_PLACEHOLDER_MODEL
-                                forwarded = json.dumps(request, separators=(",", ":")) + "\n"
-                            elif config_id == "model" and thinking_level_for(model_id):
-                                state.select(model_id)
-                                params["value"] = CONFIG_PLACEHOLDER_MODEL
-                                forwarded = json.dumps(request, separators=(",", ":")) + "\n"
                             elif config_id == "model":
-                                state.select(None)
+                                if model_id in PROXY_MODELS or model_id in ALL_MANAGED_MODELS:
+                                    state.select(model_id)
+                                    params["value"] = CONFIG_PLACEHOLDER_MODEL
+                                    forwarded = json.dumps(request, separators=(",", ":")) + "\n"
+                                elif thinking_level_for(model_id):
+                                    state.select(model_id)
+                                    params["value"] = CONFIG_PLACEHOLDER_MODEL
+                                    forwarded = json.dumps(request, separators=(",", ":")) + "\n"
+                                else:
+                                    state.select(model_id)
                 except Exception:
                     pass
                 child.stdin.write(forwarded)
