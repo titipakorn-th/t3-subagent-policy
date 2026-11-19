@@ -120,7 +120,7 @@ with tempfile.TemporaryDirectory() as tmp:
     current = {name: new for name, _old, new in patcher.EDITS}
     helpers = current.get("helpers")
     broken = good.replace(helpers, "/* a revision this patcher does not know */", 1) if helpers else good
-    broken = broken.replace("const MCODE_ACP_PATCH = 2;", "const MCODE_ACP_PATCH = 99;")
+    broken = broken.replace("const MCODE_ACP_PATCH = 3;", "const MCODE_ACP_PATCH = 99;")
     open(unknown, "w").write(broken)
     result = run(unknown)
     check("an unknown patch revision is refused", result.returncode != 0, True)

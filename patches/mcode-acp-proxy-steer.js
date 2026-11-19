@@ -8,9 +8,17 @@ const activeElicitations = new Map();
 const pendingPrompts = new Map();
 const recoveryPrompts = new Map();
 const cancelledSessions = new Set();
+const os = require('node:os');
+const https = require('node:https');
+
 // The patch revision this file carries. The patcher uses it to tell revisions
 // apart, and it is what makes an older patch migratable instead of skipped.
-const MCODE_ACP_PATCH = 2;
+const MCODE_ACP_PATCH = 3;
+
+// Version check state and caching for MCode
+const VERSION_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+let inMemoryVersionState = null;
+const notifiedSessions = new Set();
 // The agent runs one prompt turn per session at a time. A second session/prompt
 // that arrives while a turn is still running is rejected with "A prompt is
 // already active for this session.", and once the turn has ended the runtime
@@ -217,15 +225,25 @@ const GOAL_COMMAND = {
   description: 'Set an autonomous goal loop (works systematically until the goal is achieved).',
 };
 
+const UPDATE_COMMAND = {
+  name: 'update',
+  description: 'Check for MCode updates and view version status.',
+};
+
 function addGoalCommand(line) {
   const msg = parseMessage(line);
   if (!msg) return line;
   let changed = false;
   const add = (list) => {
     if (!Array.isArray(list)) return;
-    if (list.some((command) => command && command.name === GOAL_COMMAND.name)) return;
-    list.push({ ...GOAL_COMMAND });
-    changed = true;
+    if (!list.some((command) => command && command.name === GOAL_COMMAND.name)) {
+      list.push({ ...GOAL_COMMAND });
+      changed = true;
+    }
+    if (!list.some((command) => command && command.name === UPDATE_COMMAND.name)) {
+      list.push({ ...UPDATE_COMMAND });
+      changed = true;
+    }
   };
   if (msg.result) {
     add(msg.result.slashCommands);
@@ -717,6 +735,284 @@ function finishGoalCommand(proxyRequest, msg) {
     },
   });
   writeClientMessage({ jsonrpc: '2.0', id: clientRequestId, result: { stopReason: 'end_turn' } });
+}
+
+// --- MCode Version Checking & Update Handling ---
+
+function compareSemver(a, b) {
+  if (!a || !b) return 0;
+  const pa = String(a).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na > nb) return 1;
+    if (na < nb) return -1;
+  }
+  return 0;
+}
+
+let detectedMcodeHome = null;
+
+function resolveMcodeHome(targetLauncher) {
+  if (detectedMcodeHome) return detectedMcodeHome;
+  if (process.env.MINIMAX_CODE_HOME) {
+    detectedMcodeHome = process.env.MINIMAX_CODE_HOME;
+    return detectedMcodeHome;
+  }
+  if (process.env.MCODE_HOME) {
+    detectedMcodeHome = process.env.MCODE_HOME;
+    return detectedMcodeHome;
+  }
+  if (targetLauncher) {
+    const fromLauncher = path.resolve(path.dirname(targetLauncher), '../..');
+    if (fs.existsSync(path.join(fromLauncher, 'current')) || fs.existsSync(path.join(fromLauncher, 'install.json'))) {
+      detectedMcodeHome = fromLauncher;
+      return detectedMcodeHome;
+    }
+  }
+  const fromDir = path.resolve(__dirname, '..');
+  if (fs.existsSync(path.join(fromDir, 'current')) || fs.existsSync(path.join(fromDir, 'install.json'))) {
+    detectedMcodeHome = fromDir;
+    return detectedMcodeHome;
+  }
+  detectedMcodeHome = path.join(os.homedir(), '.minimax-code');
+  return detectedMcodeHome;
+}
+
+function getT3ProviderCachePath() {
+  if (process.env.T3_CACHE_DIR) {
+    return path.join(process.env.T3_CACHE_DIR, 'acpRegistry_mcoderacp.json');
+  }
+  if (process.env.T3CODE_CLI_PATH) {
+    const base = path.resolve(path.dirname(process.env.T3CODE_CLI_PATH), '..');
+    const cand = path.join(base, 'caches', 'acpRegistry_mcoderacp.json');
+    if (fs.existsSync(path.dirname(cand))) return cand;
+  }
+  return path.join(os.homedir(), '.t3', 'caches', 'acpRegistry_mcoderacp.json');
+}
+
+function getMcodeBin(mcodeHome) {
+  const isWin = process.platform === 'win32';
+  const binDir = path.join(mcodeHome, 'bin');
+  const candidates = isWin
+    ? [path.join(binDir, 'mcode.cmd'), path.join(binDir, 'mcode.exe'), path.join(binDir, 'mcode')]
+    : [path.join(binDir, 'mcode')];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return 'mcode';
+}
+
+function getLocalMcodeInfo(targetLauncher) {
+  const mcodeHome = resolveMcodeHome(targetLauncher);
+  let currentVersion = 'unknown';
+  try {
+    currentVersion = fs.readFileSync(path.join(mcodeHome, 'current'), 'utf8').trim();
+  } catch {}
+
+  let registry = 'https://registry.npmjs.org/';
+  let packageName = '@minimax-ai/code';
+  let distTag = 'latest';
+  try {
+    const installData = JSON.parse(fs.readFileSync(path.join(mcodeHome, 'install.json'), 'utf8'));
+    if (installData.registry) registry = installData.registry;
+    if (installData.packageName) packageName = installData.packageName;
+    if (installData.distTag) distTag = installData.distTag;
+  } catch {}
+
+  const mcodeBin = getMcodeBin(mcodeHome);
+  const versionCacheFile = path.join(mcodeHome, '.version-cache.json');
+  return { currentVersion, registry, packageName, distTag, mcodeHome, mcodeBin, versionCacheFile };
+}
+
+function syncT3ProviderCache(info) {
+  try {
+    const t3CachePath = getT3ProviderCachePath();
+    if (!fs.existsSync(t3CachePath)) return;
+    const raw = fs.readFileSync(t3CachePath, 'utf8');
+    const cache = JSON.parse(raw);
+    const updateCommand = `${info.mcodeBin} update`;
+    cache.versionAdvisory = {
+      status: info.hasUpdate ? 'behind_latest' : 'current',
+      currentVersion: info.currentVersion,
+      latestVersion: info.latestVersion || info.currentVersion,
+      updateCommand,
+      canUpdate: true,
+      canInstallVersion: false,
+      checkedAt: new Date().toISOString(),
+      message: info.hasUpdate ? `A new version of MCode (v${info.latestVersion}) is available.` : null
+    };
+    fs.writeFileSync(t3CachePath, JSON.stringify(cache, null, 2), 'utf8');
+  } catch {}
+}
+
+function checkMcodeVersion(force = false, targetLauncher) {
+  const local = getLocalMcodeInfo(targetLauncher);
+  const now = Date.now();
+
+  if (!force && inMemoryVersionState && (now - inMemoryVersionState.checkedAt < VERSION_CACHE_TTL_MS)) {
+    return Promise.resolve(inMemoryVersionState);
+  }
+
+  if (!force) {
+    try {
+      if (fs.existsSync(local.versionCacheFile)) {
+        const cached = JSON.parse(fs.readFileSync(local.versionCacheFile, 'utf8'));
+        if (cached && (now - cached.checkedAt < VERSION_CACHE_TTL_MS) && cached.currentVersion === local.currentVersion) {
+          inMemoryVersionState = cached;
+          return Promise.resolve(cached);
+        }
+      }
+    } catch {}
+  }
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (latestVersion) => {
+      if (resolved) return;
+      resolved = true;
+      const latest = latestVersion || local.currentVersion;
+      const hasUpdate = compareSemver(local.currentVersion, latest) < 0;
+      const result = {
+        currentVersion: local.currentVersion,
+        latestVersion: latest,
+        hasUpdate,
+        checkedAt: Date.now(),
+        mcodeHome: local.mcodeHome,
+        mcodeBin: local.mcodeBin
+      };
+      inMemoryVersionState = result;
+      try {
+        fs.writeFileSync(local.versionCacheFile, JSON.stringify(result, null, 2), 'utf8');
+      } catch {}
+      syncT3ProviderCache(result);
+      resolve(result);
+    };
+
+    try {
+      const url = new URL(`${local.packageName.replace(/^\//, '')}/${local.distTag}`, local.registry);
+      const req = https.get(url, { headers: { 'User-Agent': 'mcode-acp-proxy' }, timeout: 4000 }, (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          return finish(null);
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { body += chunk; });
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            finish(data.version || null);
+          } catch {
+            finish(null);
+          }
+        });
+      });
+      req.on('error', () => finish(null));
+      req.on('timeout', () => { req.destroy(); finish(null); });
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+function parseUpdateCommand(message) {
+  const msg = parseMessage(message);
+  if (!msg || msg.method !== 'session/prompt') return null;
+  if (msg.id === undefined || msg.id === null) return null;
+  const sessionId = sessionIdOf(msg);
+  if (sessionId === null) return null;
+  const text = userTextOf(message);
+  if (!text) return null;
+
+  const trimmed = text.trim();
+  if (
+    /^\/update(\s+.*)?$/i.test(trimmed) ||
+    /^\/mcode-update(\s+.*)?$/i.test(trimmed) ||
+    /^\/mcode\s+update(\s+.*)?$/i.test(trimmed) ||
+    /^\/mcode\s+version$/i.test(trimmed) ||
+    /^check\s+(for\s+)?mcode\s+updates?$/i.test(trimmed) ||
+    /^mcode\s+update$/i.test(trimmed)
+  ) {
+    return {
+      sessionId,
+      clientRequestId: msg.id,
+      text: trimmed
+    };
+  }
+  return null;
+}
+
+async function handleUpdateCommand(command, rawMessage) {
+  const { sessionId, clientRequestId } = command;
+  try {
+    pendingPrompts.delete(idKey(clientRequestId));
+    const info = await checkMcodeVersion(true);
+    let reply = '';
+    if (!info) {
+      reply = '⚠️ Could not determine MCode version or query the npm registry.';
+    } else if (info.hasUpdate) {
+      reply = `### 🚀 MCode Update Available\n\n` +
+        `- **Current Version:** \`v${info.currentVersion}\`\n` +
+        `- **Latest Version:** \`v${info.latestVersion}\`\n\n` +
+        `To upgrade to the latest version, run the following command in your terminal:\n` +
+        `\`\`\`bash\n` +
+        `mcode update\n` +
+        `\`\`\``;
+    } else {
+      reply = `✅ **MCode is up to date!**\n\n- **Current Version:** \`v${info.currentVersion}\`\n- **Latest Version:** \`v${info.latestVersion}\``;
+    }
+
+    writeClientMessage({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: reply }
+        }
+      }
+    });
+
+    writeClientMessage({
+      jsonrpc: '2.0',
+      id: clientRequestId,
+      result: { stopReason: 'end_turn' }
+    });
+  } catch (err) {
+    writeClientMessage({
+      jsonrpc: '2.0',
+      id: clientRequestId,
+      error: { code: -32603, message: `Failed to check update: ${err?.message || err}` }
+    });
+  }
+}
+
+function maybeInjectUpdateNotice(outgoing) {
+  const msg = parseMessage(outgoing);
+  if (!msg || msg.method !== 'session/prompt') return;
+  const sessionId = sessionIdOf(msg);
+  if (!sessionId || notifiedSessions.has(sessionId)) return;
+  notifiedSessions.add(sessionId);
+
+  if (inMemoryVersionState && inMemoryVersionState.hasUpdate) {
+    writeClientMessage({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: {
+            type: 'text',
+            text: `> 💡 **Notice**: A newer version of MCode is available (\`v${inMemoryVersionState.currentVersion}\` → \`v${inMemoryVersionState.latestVersion}\`). Run \`mcode update\` in your terminal to upgrade.\n\n`
+          }
+        }
+      }
+    });
+  }
 }
 
 // Send a request to the agent on the proxy's own behalf. Its answer never
@@ -1218,6 +1514,7 @@ function writeSystemPromptFile() {
 function startProxy(targetLauncher, targetArgs) {
   patchReleaseChunks(targetLauncher);
   patchDelegationGate(targetLauncher);
+  checkMcodeVersion(false, targetLauncher).catch(() => {});
 
   const systemPromptFile = writeSystemPromptFile();
   const args = systemPromptFile
@@ -1273,8 +1570,17 @@ function startProxy(targetLauncher, targetArgs) {
       handleGoalCommand(goal, outgoing);
       return;
     }
+    // An update check command (e.g. "/update" or "check for mcode updates")
+    const update = parseUpdateCommand(outgoing);
+    if (update) {
+      handleUpdateCommand(update, outgoing);
+      return;
+    }
     // 'defer', 'hold' and 'steer' are handled inside steerIncoming.
-    if (steerIncoming(outgoing) === 'pass') writeChildMessage(outgoing);
+    if (steerIncoming(outgoing) === 'pass') {
+      maybeInjectUpdateNotice(outgoing);
+      writeChildMessage(outgoing);
+    }
   });
   rlIn.on('close', () => child.stdin.end());
 
@@ -1301,5 +1607,14 @@ if (require.main === module) {
   }
   startProxy(targetLauncher, targetArgs);
 } else {
-  module.exports = { activeElicitations, interceptOutgoing, interceptIncoming, patchReleaseChunks };
+  module.exports = {
+    activeElicitations,
+    interceptOutgoing,
+    interceptIncoming,
+    patchReleaseChunks,
+    checkMcodeVersion,
+    compareSemver,
+    parseUpdateCommand,
+    handleUpdateCommand
+  };
 }
