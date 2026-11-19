@@ -450,10 +450,12 @@ if install_antigravity:
       SERVER_SUBCOMMAND=()
     fi
     KEEP_UID={keep_uid}
-    if [ "${{SERVER_BINARY##*/}}" = "antigravity" ]; then KEEP_UID=0; fi
+    NATIVE_SERVER=0
+    if [ "${{SERVER_BINARY##*/}}" = "antigravity" ]; then KEEP_UID=0; NATIVE_SERVER=1; fi
     ARGS=()
     for arg in "$@"; do
       case "$arg" in
+        -uid) if [ "$NATIVE_SERVER" = "0" ]; then ARGS+=("$arg"); fi ;;
         --uid=*) if [ "$KEEP_UID" = "1" ]; then ARGS+=("$arg"); fi ;;
         *) ARGS+=("$arg") ;;
       esac
