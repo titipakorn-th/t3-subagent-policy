@@ -132,20 +132,18 @@ if install_antigravity:
     with open(active_path, encoding="utf-8") as f:
         release_id = json.load(f).get("releaseId")
     version_dir = os.path.join(linux_tools, "versions", str(release_id))
-    server_binary = os.path.join(version_dir, "agy_acp_server.par")
-    native_server = False
-    if not os.path.isfile(server_binary):
-        native_binary = os.path.join(version_dir, "antigravity")
-        if os.path.isfile(native_binary):
-            server_binary = native_binary
-            native_server = True
-        else:
+    server_binary = os.path.join(version_dir, "antigravity")
+    native_server = os.path.isfile(server_binary) and os.access(server_binary, os.X_OK)
+    if not native_server:
+        server_binary = os.path.join(version_dir, "agy_acp_server.par")
+        if not os.path.isfile(server_binary):
             installed_servers = glob.glob(os.path.join(linux_tools, "versions", "*", "agy_acp_server.par"))
             if installed_servers:
                 server_binary = max(installed_servers, key=os.path.getmtime)
                 version_dir = os.path.dirname(server_binary)
             else:
                 installed_servers = glob.glob(os.path.join(linux_tools, "versions", "*", "antigravity"))
+                installed_servers = [path for path in installed_servers if os.access(path, os.X_OK)]
                 if not installed_servers:
                     raise SystemExit("No installed T3 Antigravity ACP server binary was found.")
                 server_binary = max(installed_servers, key=os.path.getmtime)
@@ -395,6 +393,9 @@ if install_antigravity:
     gemini_home = os.path.join(t3_home, "tools", "antigravity-cliproxy", "gemini-home")
     wrapper = """#!/usr/bin/env bash
     set -euo pipefail
+    if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+      export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    fi
     export PATH={agy_bin_dir}:"$PATH"
     export CLIPROXY_API_KEY="$(cat {secret_path})"
     export CLIPROXY_CONFIG_PATH={config_path}
@@ -406,11 +407,11 @@ if install_antigravity:
     T3_TOOL_ROOT={linux_tools}
     RELEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["releaseId"])' "$T3_TOOL_ROOT/active.json")"
     VERSION_DIR="$T3_TOOL_ROOT/versions/$RELEASE_ID"
-    SERVER_BINARY="$VERSION_DIR/agy_acp_server.par"
-    SERVER_SUBCOMMAND=()
-    if [ ! -x "$SERVER_BINARY" ] && [ -x "$VERSION_DIR/antigravity" ]; then
-      SERVER_BINARY="$VERSION_DIR/antigravity"
-      SERVER_SUBCOMMAND=(acp --app-data-dir . --cli_dir_name antigravity-acp)
+    SERVER_BINARY="$VERSION_DIR/antigravity"
+    SERVER_SUBCOMMAND=(acp --app-data-dir . --cli_dir_name antigravity-acp)
+    if [ ! -x "$SERVER_BINARY" ]; then
+      SERVER_BINARY="$VERSION_DIR/agy_acp_server.par"
+      SERVER_SUBCOMMAND=()
     fi
     if [ ! -x "$SERVER_BINARY" ]; then
       SERVER_BINARY=""
