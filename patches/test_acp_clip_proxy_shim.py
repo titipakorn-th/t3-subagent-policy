@@ -282,6 +282,38 @@ def test_background_task_response_rewriting():
     check("manage_task poll mandated", "manage_task" in resp_output, True)
 
 
+def test_sse_streaming_and_chunk_rewriting():
+    # 1. Standard chunk must always preserve trailing double newline so SSE clients parse events
+    c1 = "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"Hello\"}]}}]}"
+    c2 = "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \" world\"}]}}]}"
+    r1 = shim.rewrite_sse_chunk(c1)
+    r2 = shim.rewrite_sse_chunk(c2)
+    check("SSE chunk ends with \\n\\n", r1.endswith("\n\n"), True)
+    check("SSE chunk 2 ends with \\n\\n", r2.endswith("\n\n"), True)
+    combined = (r1 + r2).strip().split("\n\n")
+    check("SSE chunks don't glue together", len(combined), 2)
+    check("Event 1 valid JSON", "candidates" in json.loads(combined[0][5:].strip()), True)
+    check("Event 2 valid JSON", "candidates" in json.loads(combined[1][5:].strip()), True)
+
+    # 2. [DONE] and non-data lines preserve \n\n
+    r_done = shim.rewrite_sse_chunk("data: [DONE]")
+    check("[DONE] ends with \\n\\n", r_done, "data: [DONE]\n\n")
+    r_empty = shim.rewrite_sse_chunk("")
+    check("empty chunk produces empty string", r_empty, "")
+
+    # 3. Subagent function call rewriting preserves \n\n and updates tool name
+    fc_block = (
+        'data: {"candidates": [{"content": {"parts": [{"functionCall": '
+        '{"name": "invoke_subagent", "args": {"Subagents": [{"Prompt": "analyze data", "Role": "Codebase Researcher"}]}}}]}}]}'
+    )
+    r_fc = shim.rewrite_sse_chunk(fc_block)
+    check("rewritten FC ends with \\n\\n", r_fc.endswith("\n\n"), True)
+    data_fc = json.loads(r_fc[5:].strip())
+    fc_part = data_fc["candidates"][0]["content"]["parts"][0]["functionCall"]
+    check("invoke_subagent rewritten to call_mcp_tool", fc_part["name"], "call_mcp_tool")
+    check("delegate_task target set", fc_part["args"]["ToolName"], "delegate_task")
+
+
 def main():
     test_effort_routing()
     test_new_antigravity_models_and_efforts()
@@ -290,6 +322,7 @@ def main():
     test_subagent_function_call_rewriting()
     test_task_continuation_policy_and_cleaning()
     test_background_task_response_rewriting()
+    test_sse_streaming_and_chunk_rewriting()
     print("\nall checks passed")
 
 

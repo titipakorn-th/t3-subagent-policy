@@ -541,18 +541,23 @@ def rewrite_subagent_fc(data):
 
 
 def rewrite_sse_chunk(line_text):
-    if not line_text.startswith("data:"):
+    if not isinstance(line_text, str):
         return line_text
+    stripped = line_text.strip()
+    if not stripped:
+        return ""
+    if not line_text.startswith("data:"):
+        return line_text + "\n\n" if not line_text.endswith("\n\n") else line_text
     data_str = line_text[5:].strip()
     if not data_str or data_str == "[DONE]":
-        return line_text
+        return line_text + "\n\n" if not line_text.endswith("\n\n") else line_text
     try:
         data = json.loads(data_str)
         if rewrite_subagent_fc(data):
             return "data: " + json.dumps(data, separators=(",", ":"), ensure_ascii=False) + "\n\n"
     except Exception:
         pass
-    return line_text
+    return line_text + "\n\n" if not line_text.endswith("\n\n") else line_text
 
 
 def transform_request_payload(body, level):
@@ -660,7 +665,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             for key, value in self.headers.items()
             if key.lower() not in {"host", "connection", "transfer-encoding", "content-length"}
         }
-        conn = http.client.HTTPSConnection(upstream.hostname, upstream.port or 443, timeout=300) if upstream.scheme == "https" else http.client.HTTPConnection(upstream.hostname, upstream.port or 80, timeout=300)
+        upstream_timeout = int(os.environ.get("CLIPROXY_TIMEOUT", "1800"))
+        conn = (
+            http.client.HTTPSConnection(upstream.hostname, upstream.port or 443, timeout=upstream_timeout)
+            if upstream.scheme == "https"
+            else http.client.HTTPConnection(upstream.hostname, upstream.port or 80, timeout=upstream_timeout)
+        )
+        headers_sent = False
         try:
             conn.request(self.command, path, body=body, headers=headers)
             response = conn.getresponse()
@@ -676,6 +687,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.send_header("Transfer-Encoding", "chunked")
             self.send_header("Connection", "close")
             self.end_headers()
+            headers_sent = True
             if self.command != "HEAD":
                 sse_buffer = ""
                 while True:
@@ -689,7 +701,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         sse_buffer = lines.pop()
                         out_chunks = []
                         for block in lines:
-                            out_chunks.append(rewrite_sse_chunk(block) if "data:" in block else (block + "\n\n"))
+                            r = rewrite_sse_chunk(block)
+                            if r:
+                                out_chunks.append(r)
                         out_bytes = "".join(out_chunks).encode("utf-8")
                         if out_bytes:
                             if content_length is None:
@@ -705,8 +719,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         else:
                             self.wfile.write(chunk)
                         self.wfile.flush()
-                if sse_buffer:
-                    trailing = (rewrite_sse_chunk(sse_buffer) if "data:" in sse_buffer else sse_buffer).encode("utf-8")
+                if sse_buffer and sse_buffer.strip():
+                    trailing = rewrite_sse_chunk(sse_buffer).encode("utf-8")
                     if trailing:
                         if content_length is None:
                             self.wfile.write(f"{len(trailing):X}\r\n".encode("ascii"))
@@ -719,13 +733,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
         except Exception as exc:
             try:
-                payload = ("CLIProxyAPI adaptor error: " + str(exc)).encode("utf-8", "replace")
-                self.send_response(502)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(payload)
+                if not headers_sent:
+                    payload = ("CLIProxyAPI adaptor error: " + str(exc)).encode("utf-8", "replace")
+                    self.send_response(502)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(payload)
             except Exception:
                 pass
         finally:
