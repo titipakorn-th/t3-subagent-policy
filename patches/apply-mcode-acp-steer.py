@@ -41,7 +41,7 @@ DEFAULT = os.path.expanduser("~/.minimax-code/bin/mcode-acp-proxy.js")
 TARGET = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
 
 MARKER = "RETRYABLE_REJECTION"
-VERSION_MARKER = "const MCODE_ACP_PATCH = 3;"
+VERSION_MARKER = "const MCODE_ACP_PATCH = 4;"
 
 
 def node_binary():
@@ -96,7 +96,7 @@ const https = require('node:https');
 
 // The patch revision this file carries. The patcher uses it to tell revisions
 // apart, and it is what makes an older patch migratable instead of skipped.
-const MCODE_ACP_PATCH = 3;
+const MCODE_ACP_PATCH = 4;
 
 // Version check state and caching for MCode
 const VERSION_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -1068,9 +1068,18 @@ function maybeInjectUpdateNotice(outgoing) {
   if (!msg || msg.method !== 'session/prompt') return;
   const sessionId = sessionIdOf(msg);
   if (!sessionId || notifiedSessions.has(sessionId)) return;
-  notifiedSessions.add(sessionId);
+
+  if (!inMemoryVersionState) {
+    try {
+      const local = getLocalMcodeInfo();
+      if (fs.existsSync(local.versionCacheFile)) {
+        inMemoryVersionState = JSON.parse(fs.readFileSync(local.versionCacheFile, 'utf8'));
+      }
+    } catch {}
+  }
 
   if (inMemoryVersionState && inMemoryVersionState.hasUpdate) {
+    notifiedSessions.add(sessionId);
     writeClientMessage({
       jsonrpc: '2.0',
       method: 'session/update',
@@ -1452,6 +1461,7 @@ INTERCEPT_NEW = r"""function interceptIncoming(line) {
 """
 
 KNOWN_OLD_REVISIONS = {
+    "04a64a60d36425f9c856119892bf9dc832fc26be5508fc8c28b5c9c74e3cc2a4": "patch-3",
     "d91e351e30da49943ef889490dc44ded9501cb05dbce36281dd680a936197403": "bf8fe06b",
     "6fffaa56cf06de9edd1d71fcdff0721e3d91ae8f9ea7a5627e54ec1fc5a737cd": "patch-2-gateway-only",
     "09d1914f84c84c382800b2cf2c3a169d41b7b9d61481911fd1b017b91880828e": "baseline-elicitation-0.6.13",

@@ -13,7 +13,7 @@ const https = require('node:https');
 
 // The patch revision this file carries. The patcher uses it to tell revisions
 // apart, and it is what makes an older patch migratable instead of skipped.
-const MCODE_ACP_PATCH = 3;
+const MCODE_ACP_PATCH = 4;
 
 // Version check state and caching for MCode
 const VERSION_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -995,9 +995,18 @@ function maybeInjectUpdateNotice(outgoing) {
   if (!msg || msg.method !== 'session/prompt') return;
   const sessionId = sessionIdOf(msg);
   if (!sessionId || notifiedSessions.has(sessionId)) return;
-  notifiedSessions.add(sessionId);
+
+  if (!inMemoryVersionState) {
+    try {
+      const local = getLocalMcodeInfo();
+      if (fs.existsSync(local.versionCacheFile)) {
+        inMemoryVersionState = JSON.parse(fs.readFileSync(local.versionCacheFile, 'utf8'));
+      }
+    } catch {}
+  }
 
   if (inMemoryVersionState && inMemoryVersionState.hasUpdate) {
+    notifiedSessions.add(sessionId);
     writeClientMessage({
       jsonrpc: '2.0',
       method: 'session/update',
