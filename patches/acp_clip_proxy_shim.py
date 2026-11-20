@@ -328,6 +328,143 @@ def inject_subagent_policy(body):
         return body
 
 
+COMMAND_TASK_EXECUTION_POLICY = (
+    "\n\n[MANDATORY COMMAND & TASK CONTINUATION DIRECTIVE]\n"
+    "When running commands under T3 Code:\n"
+    "1. Never end a turn saying you are waiting for a command or background task to finish. Background task completion will NOT automatically start a new turn in T3 Code.\n"
+    "2. If `run_command` backgrounds a command (returns a TaskId), you MUST immediately call `manage_task` with Action='status' and TaskId to monitor it until Status is DONE or ERROR.\n"
+    "3. Once the task finishes, review the output, and immediately execute all subsequent delivery steps within the same turn (e.g., verifying tests, committing git changes, pushing branches, and calling T3 Code tools such as `pull_request_create`, `link_pull_request`, and `comment_on_issue`).\n"
+    "4. Do NOT leave tasks half-done or yield control to the user prematurely when tests/builds finish."
+)
+
+TASK_ID_RE = re.compile(r"task id:\s*([^\s\r\n]+)", re.IGNORECASE)
+LOG_URL_RE = re.compile(r"(Task logs are available at:\s*[^\r\n]+)", re.IGNORECASE)
+
+
+def rewrite_background_task_string(text):
+    if not isinstance(text, str):
+        return text
+    if "Tool is running as a background task with task id" not in text:
+        return text
+    if "YOU MUST TAKE ONE OF THE FOLLOWING TWO ACTIONS" not in text and "DO NOTHING ELSE" not in text:
+        return text
+
+    m = TASK_ID_RE.search(text)
+    task_id = m.group(1) if m else "<task_id>"
+    log_match = LOG_URL_RE.search(text)
+    log_info = f"\n{log_match.group(1)}" if log_match else ""
+
+    return (
+        f"Tool is running as a background task with task id: {task_id}{log_info}\n\n"
+        f"[T3 CODE CRITICAL INSTRUCTION]: You are running under T3 Code ACP. Background task "
+        f"completions DO NOT automatically wake up this thread after ending a turn. "
+        f"You MUST NOT end the turn waiting.\n"
+        f"You must immediately poll `manage_task` with Action='status' and TaskId='{task_id}' "
+        f"until the task status is DONE or ERROR. Once finished, inspect the command output "
+        f"and proceed immediately to complete all remaining mandate tasks (verifying results, "
+        f"committing changes, pushing branches, and calling T3 Code tools such as "
+        f"`pull_request_create`, `link_pull_request`, and `comment_on_issue`)."
+    )
+
+
+def rewrite_response_obj(obj):
+    if isinstance(obj, str):
+        return rewrite_background_task_string(obj)
+    if isinstance(obj, dict):
+        return {k: rewrite_response_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [rewrite_response_obj(x) for x in obj]
+    return obj
+
+
+def rewrite_background_tasks_in_contents(payload):
+    """Scan contents for run_command background task responses and rewrite the instruction to poll instead of stopping."""
+    if not isinstance(payload, dict):
+        return
+    contents = payload.get("contents")
+    if not isinstance(contents, list):
+        return
+    for item in contents:
+        if not isinstance(item, dict):
+            continue
+        parts = item.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if "text" in part and isinstance(part["text"], str):
+                part["text"] = rewrite_background_task_string(part["text"])
+            fc_resp = part.get("functionResponse")
+            if isinstance(fc_resp, dict):
+                if "response" in fc_resp:
+                    fc_resp["response"] = rewrite_response_obj(fc_resp["response"])
+
+
+def clean_reactive_wakeups_from_system_instruction(payload):
+    """Neutralize Antigravity instructions telling the model not to poll and to end turn on background tasks."""
+    if not isinstance(payload, dict):
+        return
+    sys_inst = payload.get("systemInstruction")
+    if not isinstance(sys_inst, dict):
+        return
+    parts = sys_inst.get("parts")
+    if not isinstance(parts, list):
+        return
+    for part in parts:
+        if isinstance(part, dict) and "text" in part:
+            text = part["text"]
+            text = re.sub(
+                r"Commands that do not finish within [^\.]*?so do not poll their status[^\.]*\.",
+                "Commands that do not finish within the wait time run as background tasks. Under T3 Code ACP, you must poll manage_task(Action='status', TaskId=...) until completion; do NOT end the turn waiting.",
+                text,
+            )
+            text = re.sub(
+                r"## Reactive Wakeup \(No Polling Needed\).*?The system will notify you when there is something to process\.",
+                "## Task & Command Polling (Required under T3 Code ACP)\n\nUnder T3 Code ACP, background tasks DO NOT automatically wake up or resume this thread after ending a turn. You MUST NOT end the turn waiting or stop calling tools while a background task is running. You must poll `manage_task(Action='status', TaskId=...)` until the task is DONE or ERROR.",
+                text,
+                flags=re.DOTALL,
+            )
+            text = re.sub(
+                r"This means you do NOT need to poll in a loop while waiting for messages or updates\..*?simply stop by calling no more tools\. The system will notify you when there is something to process\.",
+                "Under T3 Code ACP, background tasks DO NOT automatically wake up this thread after ending a turn. You MUST NOT end the turn waiting. Poll manage_task(Action='status', TaskId=...) until completion.",
+                text,
+                flags=re.DOTALL,
+            )
+            part["text"] = text
+
+
+def inject_task_continuation_policy(body):
+    """Ensure background tasks are polled and completed within turn, avoiding premature turn exit."""
+    if body is None:
+        return body
+    try:
+        is_dict = isinstance(body, dict)
+        payload = body if is_dict else json.loads(body)
+        if not isinstance(payload, dict) or "contents" not in payload:
+            return body
+
+        clean_reactive_wakeups_from_system_instruction(payload)
+        rewrite_background_tasks_in_contents(payload)
+
+        sys_inst = payload.setdefault("systemInstruction", {})
+        if not isinstance(sys_inst, dict):
+            return body
+        parts = sys_inst.setdefault("parts", [])
+        if not isinstance(parts, list):
+            return body
+
+        for part in parts:
+            if isinstance(part, dict) and "[MANDATORY COMMAND & TASK CONTINUATION DIRECTIVE]" in part.get("text", ""):
+                part["text"] = COMMAND_TASK_EXECUTION_POLICY
+                return payload if is_dict else json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+        parts.append({"text": COMMAND_TASK_EXECUTION_POLICY})
+        return payload if is_dict else json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError):
+        return body
+
+
 def rewrite_subagent_fc(data):
     """Rewrite any invoke_subagent or delegate_task function call into call_mcp_tool."""
     candidates = data.get("candidates")
@@ -403,6 +540,7 @@ def rewrite_sse_chunk(line_text):
 def transform_request_payload(body, level):
     body = apply_thinking_level(body, level)
     body = inject_subagent_policy(body)
+    body = inject_task_continuation_policy(body)
     active_goal = state.get_goal()
     if active_goal:
         body = inject_goal_policy(body, active_goal)

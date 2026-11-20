@@ -78,11 +78,12 @@ def test_new_antigravity_models_and_efforts():
     check("Hydrogen model advertised", "gemini-4-hydrogen" in models, True)
     check("Opus model advertised", "claude-opus-5-5" in models, True)
     check("Sonnet model advertised", "claude-sonnet-5-5" in models, True)
-    check("unavailable Orchestrator model omitted",
-          "gemini-pro-orchestrator-g1-pro" not in models, True)
+    check("Orchestrator model advertised",
+          "gemini-pro-orchestrator-g1-pro" in models, True)
     for model, expected in (
         ("gemini-4-argon", {"low", "medium", "high"}),
         ("gemini-4-hydrogen", {"low", "medium", "high", "xhigh"}),
+        ("gemini-pro-orchestrator-g1-pro", {"low", "medium", "high", "xhigh"}),
         ("claude-opus-5-5", {"low", "medium", "high"}),
         ("claude-sonnet-5-5", {"low", "medium", "high"}),
     ):
@@ -198,12 +199,84 @@ def test_subagent_function_call_rewriting():
     check("dt Arguments task", rewritten_dt["args"]["Arguments"]["task"], "Direct delegate")
 
 
+def test_task_continuation_policy_and_cleaning():
+    raw_body = json.dumps({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "systemInstruction": {
+            "parts": [
+                {
+                    "text": (
+                        "Base system prompt.\n"
+                        "Commands that do not finish within the specified wait time continue running in the background as tasks; "
+                        "the system will notify you when they finish, so do not poll their status or set timers to check on them.\n"
+                        "## Reactive Wakeup (No Polling Needed)\n"
+                        "This means you do NOT need to poll in a loop while waiting for messages or updates. "
+                        "After launching anything that performs work asynchronously, you may continue other work or "
+                        "simply stop by calling no more tools. The system will notify you when there is something to process.\n"
+                    )
+                }
+            ]
+        }
+    }).encode("utf-8")
+
+    transformed = json.loads(shim.transform_request_payload(raw_body, "medium"))
+    sys_text = "\n".join(p.get("text", "") for p in transformed["systemInstruction"]["parts"])
+    check("directive injected", "[MANDATORY COMMAND & TASK CONTINUATION DIRECTIVE]" in sys_text, True)
+    check("do not poll neutralized", "do not poll their status" not in sys_text, True)
+    check("simply stop neutralized", "simply stop by calling no more tools" not in sys_text, True)
+    check("manage_task mentioned in directive", "manage_task" in sys_text, True)
+
+
+def test_background_task_response_rewriting():
+    raw_body = json.dumps({
+        "contents": [
+            {
+                "role": "model",
+                "parts": [{
+                    "functionCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "cargo test"}
+                    }
+                }]
+            },
+            {
+                "role": "function",
+                "parts": [{
+                    "functionResponse": {
+                        "name": "run_command",
+                        "response": {
+                            "output": (
+                                "Tool is running as a background task with task id: test-task-42\n"
+                                "Task logs are available at: file:///path/to/task-42.log\n"
+                                "YOU MUST TAKE ONE OF THE FOLLOWING TWO ACTIONS: A) either proceed to other relevant work (if any) or, "
+                                "B) simply update the user with a short message (that you have launched the command and will wait for it to finish) and end the turn.\n"
+                                " DO NOTHING ELSE."
+                            )
+                        }
+                    }
+                }]
+            }
+        ],
+        "systemInstruction": {"parts": [{"text": "Base instructions."}]}
+    }).encode("utf-8")
+
+    transformed = json.loads(shim.transform_request_payload(raw_body, "medium"))
+    resp_output = transformed["contents"][1]["parts"][0]["functionResponse"]["response"]["output"]
+    check("task id preserved in rewritten text", "test-task-42" in resp_output, True)
+    check("DO NOTHING ELSE removed", "DO NOTHING ELSE" not in resp_output, True)
+    check("TWO ACTIONS removed", "YOU MUST TAKE ONE OF THE FOLLOWING TWO ACTIONS" not in resp_output, True)
+    check("T3 critical instruction added", "[T3 CODE CRITICAL INSTRUCTION]" in resp_output, True)
+    check("manage_task poll mandated", "manage_task" in resp_output, True)
+
+
 def main():
     test_effort_routing()
     test_new_antigravity_models_and_efforts()
     test_hydrogen_xhigh_variant_maps_its_effort()
     test_subagent_tool_filtering_and_policy()
     test_subagent_function_call_rewriting()
+    test_task_continuation_policy_and_cleaning()
+    test_background_task_response_rewriting()
     print("\nall checks passed")
 
 
