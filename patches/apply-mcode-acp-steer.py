@@ -48,18 +48,30 @@ def node_binary():
     """The node to check the patched proxy with.
 
     A machine without a system node still has the one the mcode runtime ships,
-    so use that rather than failing.
+    or the one registered in install.json, so use that rather than failing.
     """
     found = os.environ.get("MCODE_NODE")
     if found and os.path.exists(found):
         return found
     if shutil.which("node"):
         return "node"
-    runtime = os.path.expanduser("~/.minimax-code/runtime")
-    for candidate in sorted(glob.glob(os.path.join(runtime, "node-*"))):
-        path = os.path.join(candidate, "bin", "node")
-        if os.path.exists(path):
-            return path
+    target_dir = os.path.dirname(os.path.abspath(TARGET))
+    mcode_home = os.path.dirname(target_dir) if os.path.basename(target_dir) == "bin" else os.path.expanduser("~/.minimax-code")
+    for base in [mcode_home, os.path.expanduser("~/.minimax-code")]:
+        ij = os.path.join(base, "install.json")
+        if os.path.exists(ij):
+            try:
+                import json
+                candidate = json.load(open(ij)).get("nodeExecutable")
+                if candidate and os.path.exists(candidate):
+                    return candidate
+            except Exception:
+                pass
+        runtime = os.path.join(base, "runtime")
+        for candidate in sorted(glob.glob(os.path.join(runtime, "node-*"))):
+            path = os.path.join(candidate, "bin", "node")
+            if os.path.exists(path):
+                return path
     return None
 
 
@@ -1441,6 +1453,8 @@ INTERCEPT_NEW = r"""function interceptIncoming(line) {
 
 KNOWN_OLD_REVISIONS = {
     "d91e351e30da49943ef889490dc44ded9501cb05dbce36281dd680a936197403": "bf8fe06b",
+    "6fffaa56cf06de9edd1d71fcdff0721e3d91ae8f9ea7a5627e54ec1fc5a737cd": "patch-2-gateway-only",
+    "09d1914f84c84c382800b2cf2c3a169d41b7b9d61481911fd1b017b91880828e": "baseline-elicitation-0.6.13",
     "041d0b505dbb15cfaf4b8cf241437915db061338401714642bbcdd918ffbd684": "84ea1a27bbec",
     "258747867d186c247e4d2d33d8445d5c3775120c035738957894fbb07deb1ad4": "23551a08beca",
     "263758964a684471e3a4ac0ef50364656706bc0f94c4f710e28700d85eea01d9": "8e2225d52633",
