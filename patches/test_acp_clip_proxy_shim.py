@@ -113,6 +113,19 @@ def test_hydrogen_xhigh_variant_maps_its_effort():
     shim.state.select(None)
 
 
+def test_orchestrator_aliases_and_routing():
+    for alias in ("gemini-pro-orchestrator-g1-pro", "gemini-pro-orchestrator-argon", "gemini-pro-orchestrator"):
+        check(f"{alias} in PROXY_MODELS", alias in shim.PROXY_MODELS, True)
+        check(f"{alias} in ALL_MANAGED_MODELS", alias in shim.ALL_MANAGED_MODELS, True)
+        proxy_model, default_level = shim.PROXY_MODELS[alias]
+        check(f"{alias} maps to PROXY_ORCHESTRATOR_MODEL", proxy_model, shim.PROXY_ORCHESTRATOR_MODEL)
+        check(f"{alias} exposes effort levels",
+              shim.effort_levels_for(alias),
+              ("low", "medium", "high", "xhigh"))
+        for level in ("low", "medium", "high", "xhigh"):
+            check(f"{alias}-{level} in PROXY_MODELS", f"{alias}-{level}" in shim.PROXY_MODELS, True)
+
+
 def test_subagent_tool_filtering_and_policy():
     raw_body = json.dumps({
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

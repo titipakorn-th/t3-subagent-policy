@@ -206,8 +206,8 @@ revision of it. Two things differ:
   three separate models. The newer one offers `claude-opus-5-5` and puts the effort next to it as
   a thinking level selector. So the two machines did not show the same models.
 
-The known-good shim exposes Gemini 4 Hydrogen through the ACP model selector. Orchestrator (Argon)
-is omitted until CLIProxyAPI advertises a route for it.
+The known-good shim exposes Gemini 4 Hydrogen and Orchestrator (Argon) through the ACP model
+selector. Orchestrator (Argon) routes its upstream requests through CLIProxyAPI via `gemini-4-argon-high`.
 
 The repo therefore carries the known-good shim, and `patches/acp_clip_proxy_shim.py` is the file
 every machine gets:

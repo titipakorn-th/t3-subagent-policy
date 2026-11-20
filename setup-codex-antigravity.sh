@@ -509,6 +509,9 @@ if install_antigravity:
             base_names = {
                 "gemini-4-argon": ("Gemini 4 Argon", ("low", "medium", "high")),
                 "gemini-4-hydrogen": ("Gemini 4 Hydrogen", ("low", "medium", "high", "xhigh")),
+                "gemini-pro-orchestrator-g1-pro": ("Orchestrator (Argon)", ("low", "medium", "high", "xhigh")),
+                "gemini-pro-orchestrator-argon": ("Orchestrator (Argon)", ("low", "medium", "high", "xhigh")),
+                "gemini-pro-orchestrator": ("Orchestrator (Argon)", ("low", "medium", "high", "xhigh")),
                 "claude-opus-5-5": ("Claude Opus 5.5", ("low", "medium", "high")),
                 "claude-sonnet-5-5": ("Claude Sonnet 5.5", ("low", "medium", "high")),
             }

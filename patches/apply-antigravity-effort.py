@@ -137,12 +137,14 @@ if CHECK:
 if src == good:
     print(f"already patched: {TARGET}")
     sys.exit(0)
-if missing:
-    # An older revision: it does not have everything the known-good has. The
-    # known-good file replaces it exactly.
+extra = features(src) - features(good)
+if missing or (TARGET == DEFAULT and not extra):
+    # An older revision: it does not have everything the known-good has, or this machine's
+    # deployed shim has no unknown extra features. The known-good file replaces it exactly.
     install(TARGET, good, "the known-good shim")
-    print(f"installed the known-good shim over an older revision: {TARGET}")
-    print(f"missing from the deployed revision: {', '.join(sorted(missing))}")
+    print(f"installed the known-good shim: {TARGET}")
+    if missing:
+        print(f"missing from the deployed revision: {', '.join(sorted(missing))}")
     print("new ACP processes pick this up; restart T3 Code or open a new thread.")
     sys.exit(0)
 

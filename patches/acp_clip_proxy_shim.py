@@ -20,7 +20,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 ARGON_MODELS = ("gemini-4-argon",)
 HYDROGEN_MODELS = ("gemini-4-hydrogen",)
-ORCHESTRATOR_MODELS = ("gemini-pro-orchestrator-g1-pro",)
+ORCHESTRATOR_MODELS = (
+    "gemini-pro-orchestrator-g1-pro",
+    "gemini-pro-orchestrator-argon",
+    "gemini-pro-orchestrator",
+)
 FLASH_MODELS = ("gemini-3.8-flash",)
 CLAUDE_MODELS = {
     "claude-opus-5-5": ("claude-opus-5-5-high", None),
@@ -69,6 +73,8 @@ PROXY_MODELS = {
     "gemini-4-argon": (PROXY_ARGON_MODEL, None),
     "gemini-4-hydrogen": (PROXY_HYDROGEN_MODEL, None),
     "gemini-pro-orchestrator-g1-pro": (PROXY_ORCHESTRATOR_MODEL, None),
+    "gemini-pro-orchestrator-argon": (PROXY_ORCHESTRATOR_MODEL, None),
+    "gemini-pro-orchestrator": (PROXY_ORCHESTRATOR_MODEL, None),
     "gemini-3.8-flash": (PROXY_FLASH_MODEL, None),
     "gpt-oss-120b-medium": (PROXY_GPT_OSS_MODEL, None),
     **CLAUDE_MODELS,
@@ -81,7 +87,8 @@ PROXY_MODELS = {
         for level in HYDROGEN_THINKING_LEVELS
     },
     **{
-        f"gemini-pro-orchestrator-g1-pro-{level}": (PROXY_ORCHESTRATOR_MODEL, level)
+        f"{model}-{level}": (PROXY_ORCHESTRATOR_MODEL, level)
+        for model in ORCHESTRATOR_MODELS
         for level in HYDROGEN_THINKING_LEVELS
     },
     **{
@@ -107,17 +114,28 @@ MODEL_NAMES = {
     "gemini-4-argon": "Gemini 4 Argon",
     "gemini-4-hydrogen": "Gemini 4 Hydrogen",
     "gemini-pro-orchestrator-g1-pro": "Orchestrator (Argon)",
+    "gemini-pro-orchestrator-argon": "Orchestrator (Argon)",
+    "gemini-pro-orchestrator": "Orchestrator (Argon)",
     "gemini-3.8-flash": "Gemini 3.8 Flash",
     "claude-opus-5-5": "Claude Opus 5.5",
     "claude-sonnet-5-5": "Claude Sonnet 5.5",
     "gpt-oss-120b-medium": "GPT-OSS 120B (Medium)",
 }
+PRIMARY_MANAGED_MODELS = (
+    "gemini-4-argon",
+    "gemini-4-hydrogen",
+    "gemini-pro-orchestrator-g1-pro",
+    "gemini-3.8-flash",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "gpt-oss-120b-medium",
+)
 MODEL_CHOICES = {
     model: (
-        name,
-        f"{name} routed through CLIProxyAPI.",
+        MODEL_NAMES[model],
+        f"{MODEL_NAMES[model]} routed through CLIProxyAPI.",
     )
-    for model, name in MODEL_NAMES.items()
+    for model in PRIMARY_MANAGED_MODELS
 }
 
 
@@ -628,6 +646,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 prefix, sep, rest = path.partition("/v1beta/models/")
                 model_in_path, sep2, after = rest.partition(":")
                 path = f"{prefix}/v1beta/models/{proxy_model}:{after}"
+        for orch_model in (*ORCHESTRATOR_MODELS, "gemini-pro-orchestrator-neon"):
+            old = f"/v1beta/models/{orch_model}:"
+            if old in path:
+                target_orch = proxy_model or PROXY_ORCHESTRATOR_MODEL
+                path = path.replace(old, f"/v1beta/models/{target_orch}:", 1)
+                break
         length = int(self.headers.get("Content-Length", "0") or 0)
         body = self.rfile.read(length) if length else None
         body = transform_request_payload(body, body_level)
@@ -770,10 +794,13 @@ def add_proxy_choices(message):
                 })
         # The child echoes the placeholder model back; report the model the user actually picked.
         selected = state.selected_proxy_model()
-        if selected and any(
-            choice.get("value") == selected for choice in choices if isinstance(choice, dict)
-        ):
-            option["currentValue"] = selected
+        if selected:
+            for choice in choices:
+                if isinstance(choice, dict):
+                    cval = choice.get("value")
+                    if cval == selected or (selected in ORCHESTRATOR_MODELS and cval in ORCHESTRATOR_MODELS):
+                        option["currentValue"] = selected
+                        break
 
     config_options = result.setdefault("configOptions", [])
     if isinstance(config_options, list):
@@ -843,8 +870,13 @@ def add_proxy_choices(message):
                         "name": name,
                     })
             selected = state.selected_proxy_model()
-            if selected and any(isinstance(item, dict) and item.get("modelId") == selected for item in available):
-                models["currentModelId"] = selected
+            if selected:
+                for item in available:
+                    if isinstance(item, dict):
+                        m_id = item.get("modelId")
+                        if m_id == selected or (selected in ORCHESTRATOR_MODELS and m_id in ORCHESTRATOR_MODELS):
+                            models["currentModelId"] = selected
+                            break
 
 
 def patch_notification(message):
