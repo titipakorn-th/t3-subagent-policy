@@ -664,8 +664,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         headers = {
             key: value
             for key, value in self.headers.items()
-            if key.lower() not in {"host", "connection", "transfer-encoding", "content-length"}
+            if key.lower() not in {"host", "connection", "transfer-encoding", "content-length", "accept-encoding"}
         }
+        headers["Accept-Encoding"] = "identity"
         upstream_timeout = int(os.environ.get("CLIPROXY_TIMEOUT", "1800"))
         ssl_ctx = ssl._create_unverified_context() if upstream.scheme == "https" else None
         conn = (
@@ -729,11 +730,36 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                 response = resp_holder[0]
                 if response.status == 200:
+                    content_encoding = dict(response.getheaders()).get("content-encoding", "").lower()
+                    decompressor = None
+                    if "gzip" in content_encoding:
+                        import zlib
+                        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                    elif "deflate" in content_encoding:
+                        import zlib
+                        decompressor = zlib.decompressobj()
+
                     sse_buffer = ""
                     while True:
-                        chunk = response.read1(65536)
+                        raw_chunk = response.read1(65536)
+                        if not raw_chunk:
+                            if decompressor:
+                                flushed = decompressor.flush()
+                                if flushed:
+                                    raw_chunk = flushed
+                                else:
+                                    break
+                            else:
+                                break
+                        if decompressor:
+                            try:
+                                chunk = decompressor.decompress(raw_chunk)
+                            except Exception:
+                                chunk = raw_chunk
+                        else:
+                            chunk = raw_chunk
                         if not chunk:
-                            break
+                            continue
                         chunk_text = chunk.decode("utf-8", errors="replace")
                         if "data:" in chunk_text or sse_buffer:
                             combined = sse_buffer + chunk_text
