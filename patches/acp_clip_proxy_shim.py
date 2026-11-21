@@ -704,18 +704,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 fetch_thread = threading.Thread(target=fetch_upstream, daemon=True)
                 fetch_thread.start()
 
-                keepalive = b": keep-alive\n\n"
-                ka_chunk = f"{len(keepalive):X}\r\n".encode("ascii") + keepalive + b"\r\n"
-                ka_interval = float(os.environ.get("CLIPROXY_KEEPALIVE_INTERVAL", "10.0"))
+                # Note on keepalives: Antigravity Go SDK (google.golang.org/genai api_client.go iterateResponseStream)
+                # scans SSE stream lines and strictly expects `data:` or `len(line) == 0`. Any comment line like
+                # `: keep-alive` causes `iterateResponseStream: invalid stream chunk: : keep-alive`.
+                # Blank lines (b"\n\n"), however, have len(line) == 0 and are silently ignored by `for rs.r.Scan()`
+                # in Go, while successfully writing bytes over TCP to keep sockets and intermediate proxies alive.
+                # Default to pure empty newlines b"\n\n".
+                keepalive = os.environ.get("CLIPROXY_KEEPALIVE_BYTES", "\n\n").encode("utf-8")
+                ka_chunk = f"{len(keepalive):X}\r\n".encode("ascii") + keepalive + b"\r\n" if keepalive else b""
+                ka_interval = float(os.environ.get("CLIPROXY_KEEPALIVE_INTERVAL", "15.0"))
 
-                # Send SSE keepalive comments periodically while waiting for first response byte from upstream
+                # Send SSE keepalive blank lines periodically while waiting for first response byte from upstream
                 while not done_event.wait(timeout=ka_interval):
-                    try:
-                        self.wfile.write(ka_chunk)
-                        self.wfile.flush()
-                    except Exception:
-                        conn.close()
-                        return
+                    if ka_chunk:
+                        try:
+                            self.wfile.write(ka_chunk)
+                            self.wfile.flush()
+                        except Exception:
+                            conn.close()
+                            return
 
                 if exc_holder:
                     raise exc_holder[0]
