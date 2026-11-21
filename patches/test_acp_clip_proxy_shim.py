@@ -314,6 +314,56 @@ def test_sse_streaming_and_chunk_rewriting():
     check("delegate_task target set", fc_part["args"]["ToolName"], "delegate_task")
 
 
+def test_sse_slow_upstream_immediate_headers_and_keepalive():
+    """Verify that SSE requests get HTTP 200 headers immediately and receive keepalive comments."""
+    import http.server, urllib.request, threading, time
+
+    class MockSlowUpstream(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_POST(self):
+            time.sleep(1.2)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            data = b"data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"hello\"}]}}]}\n\n"
+            self.wfile.write(f"{len(data):X}\r\n".encode("ascii") + data + b"\r\n")
+            self.wfile.flush()
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+
+    up_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MockSlowUpstream)
+    up_port = up_srv.server_address[1]
+    threading.Thread(target=up_srv.serve_forever, daemon=True).start()
+
+    old_up = shim.ProxyHandler.upstream
+    old_interval = os.environ.get("CLIPROXY_KEEPALIVE_INTERVAL")
+    try:
+        os.environ["CLIPROXY_KEEPALIVE_INTERVAL"] = "0.4"
+        shim.ProxyHandler.upstream = f"http://127.0.0.1:{up_port}"
+        px_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), shim.ProxyHandler)
+        px_port = px_srv.server_address[1]
+        threading.Thread(target=px_srv.serve_forever, daemon=True).start()
+
+        start_t = time.time()
+        req = urllib.request.Request(f"http://127.0.0.1:{px_port}/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse", data=b"{}", headers={"Accept": "text/event-stream"})
+        with urllib.request.urlopen(req) as resp:
+            header_elapsed = time.time() - start_t
+            check("Headers received immediately (< 0.5s)", header_elapsed < 0.5, True)
+            body = resp.read().decode("utf-8")
+            check("Keepalive comment received in stream", ": keep-alive\n\n" in body, True)
+            check("Data chunk received in stream", "hello" in body, True)
+
+        px_srv.shutdown()
+    finally:
+        shim.ProxyHandler.upstream = old_up
+        if old_interval is None:
+            os.environ.pop("CLIPROXY_KEEPALIVE_INTERVAL", None)
+        else:
+            os.environ["CLIPROXY_KEEPALIVE_INTERVAL"] = old_interval
+        up_srv.shutdown()
+
+
 def main():
     test_effort_routing()
     test_new_antigravity_models_and_efforts()
@@ -323,6 +373,7 @@ def main():
     test_task_continuation_policy_and_cleaning()
     test_background_task_response_rewriting()
     test_sse_streaming_and_chunk_rewriting()
+    test_sse_slow_upstream_immediate_headers_and_keepalive()
     print("\nall checks passed")
 
 

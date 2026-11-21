@@ -12,6 +12,7 @@ import os
 import re
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -666,71 +667,131 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if key.lower() not in {"host", "connection", "transfer-encoding", "content-length"}
         }
         upstream_timeout = int(os.environ.get("CLIPROXY_TIMEOUT", "1800"))
+        ssl_ctx = ssl._create_unverified_context() if upstream.scheme == "https" else None
         conn = (
-            http.client.HTTPSConnection(upstream.hostname, upstream.port or 443, timeout=upstream_timeout)
+            http.client.HTTPSConnection(upstream.hostname, upstream.port or 443, timeout=upstream_timeout, context=ssl_ctx)
             if upstream.scheme == "https"
             else http.client.HTTPConnection(upstream.hostname, upstream.port or 80, timeout=upstream_timeout)
         )
         headers_sent = False
+        is_sse = "alt=sse" in path or "text/event-stream" in self.headers.get("Accept", "")
         try:
-            conn.request(self.command, path, body=body, headers=headers)
-            response = conn.getresponse()
-            self.send_response(response.status, response.reason)
-            response_headers = {k.lower(): (k, v) for k, v in response.getheaders()}
-            is_chunked = response_headers.get("transfer-encoding", ("", ""))[1].lower() == "chunked"
-            content_length = response_headers.get("content-length")
-            for lower, (key, value) in response_headers.items():
-                if lower in {"connection", "transfer-encoding", "keep-alive", "proxy-authenticate", "proxy-authorization", "trailer", "upgrade"}:
-                    continue
-                self.send_header(key, value)
-            if content_length is None and self.command != "HEAD":
+            if is_sse and self.command != "HEAD":
+                # Send HTTP headers immediately so Antigravity client header timeout (60s) does not trigger
+                # while upstream reasoning/thinking models (e.g. gemini-4-argon-high) process large prompts.
+                self.send_response(200, "OK")
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Transfer-Encoding", "chunked")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            headers_sent = True
-            if self.command != "HEAD":
-                sse_buffer = ""
-                while True:
-                    chunk = response.read1(65536)
-                    if not chunk:
-                        break
-                    chunk_text = chunk.decode("utf-8", errors="replace")
-                    if "data:" in chunk_text or sse_buffer:
-                        combined = sse_buffer + chunk_text
-                        lines = combined.split("\n\n")
-                        sse_buffer = lines.pop()
-                        out_chunks = []
-                        for block in lines:
-                            r = rewrite_sse_chunk(block)
-                            if r:
-                                out_chunks.append(r)
-                        out_bytes = "".join(out_chunks).encode("utf-8")
-                        if out_bytes:
-                            if content_length is None:
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                headers_sent = True
+
+                resp_holder = []
+                exc_holder = []
+                done_event = threading.Event()
+
+                def fetch_upstream():
+                    try:
+                        conn.request(self.command, path, body=body, headers=headers)
+                        resp = conn.getresponse()
+                        resp_holder.append(resp)
+                    except Exception as ex:
+                        exc_holder.append(ex)
+                    finally:
+                        done_event.set()
+
+                fetch_thread = threading.Thread(target=fetch_upstream, daemon=True)
+                fetch_thread.start()
+
+                keepalive = b": keep-alive\n\n"
+                ka_chunk = f"{len(keepalive):X}\r\n".encode("ascii") + keepalive + b"\r\n"
+                ka_interval = float(os.environ.get("CLIPROXY_KEEPALIVE_INTERVAL", "10.0"))
+
+                # Send SSE keepalive comments periodically while waiting for first response byte from upstream
+                while not done_event.wait(timeout=ka_interval):
+                    try:
+                        self.wfile.write(ka_chunk)
+                        self.wfile.flush()
+                    except Exception:
+                        conn.close()
+                        return
+
+                if exc_holder:
+                    raise exc_holder[0]
+
+                response = resp_holder[0]
+                if response.status == 200:
+                    sse_buffer = ""
+                    while True:
+                        chunk = response.read1(65536)
+                        if not chunk:
+                            break
+                        chunk_text = chunk.decode("utf-8", errors="replace")
+                        if "data:" in chunk_text or sse_buffer:
+                            combined = sse_buffer + chunk_text
+                            lines = combined.split("\n\n")
+                            sse_buffer = lines.pop()
+                            out_chunks = []
+                            for block in lines:
+                                r = rewrite_sse_chunk(block)
+                                if r:
+                                    out_chunks.append(r)
+                            out_bytes = "".join(out_chunks).encode("utf-8")
+                            if out_bytes:
                                 self.wfile.write(f"{len(out_bytes):X}\r\n".encode("ascii"))
                                 self.wfile.write(out_bytes + b"\r\n")
-                            else:
-                                self.wfile.write(out_bytes)
+                                self.wfile.flush()
+                        else:
+                            self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
+                            self.wfile.write(chunk + b"\r\n")
                             self.wfile.flush()
-                    else:
+                    if sse_buffer and sse_buffer.strip():
+                        trailing = rewrite_sse_chunk(sse_buffer).encode("utf-8")
+                        if trailing:
+                            self.wfile.write(f"{len(trailing):X}\r\n".encode("ascii"))
+                            self.wfile.write(trailing + b"\r\n")
+                            self.wfile.flush()
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                else:
+                    err_data = response.read().decode("utf-8", errors="replace")
+                    err_msg = json.dumps({"error": {"code": response.status, "message": f"Upstream error {response.status}: {err_data}"}})
+                    err_block = f"data: {err_msg}\n\n".encode("utf-8")
+                    self.wfile.write(f"{len(err_block):X}\r\n".encode("ascii"))
+                    self.wfile.write(err_block + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+            else:
+                conn.request(self.command, path, body=body, headers=headers)
+                response = conn.getresponse()
+                self.send_response(response.status, response.reason)
+                response_headers = {k.lower(): (k, v) for k, v in response.getheaders()}
+                is_chunked = response_headers.get("transfer-encoding", ("", ""))[1].lower() == "chunked"
+                content_length = response_headers.get("content-length")
+                for lower, (key, value) in response_headers.items():
+                    if lower in {"connection", "transfer-encoding", "keep-alive", "proxy-authenticate", "proxy-authorization", "trailer", "upgrade"}:
+                        continue
+                    self.send_header(key, value)
+                if content_length is None and self.command != "HEAD":
+                    self.send_header("Transfer-Encoding", "chunked")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                headers_sent = True
+                if self.command != "HEAD":
+                    while True:
+                        chunk = response.read1(65536)
+                        if not chunk:
+                            break
                         if content_length is None:
                             self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
                             self.wfile.write(chunk + b"\r\n")
                         else:
                             self.wfile.write(chunk)
                         self.wfile.flush()
-                if sse_buffer and sse_buffer.strip():
-                    trailing = rewrite_sse_chunk(sse_buffer).encode("utf-8")
-                    if trailing:
-                        if content_length is None:
-                            self.wfile.write(f"{len(trailing):X}\r\n".encode("ascii"))
-                            self.wfile.write(trailing + b"\r\n")
-                        else:
-                            self.wfile.write(trailing)
+                    if content_length is None:
+                        self.wfile.write(b"0\r\n\r\n")
                         self.wfile.flush()
-                if content_length is None:
-                    self.wfile.write(b"0\r\n\r\n")
-                    self.wfile.flush()
         except Exception as exc:
             try:
                 if not headers_sent:
@@ -741,6 +802,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(payload)
+                elif is_sse:
+                    err_msg = json.dumps({"error": {"code": 502, "message": f"CLIProxyAPI stream error: {exc}"}})
+                    err_block = f"data: {err_msg}\n\n".encode("utf-8")
+                    self.wfile.write(f"{len(err_block):X}\r\n".encode("ascii"))
+                    self.wfile.write(err_block + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
             except Exception:
                 pass
         finally:
