@@ -1237,6 +1237,9 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
+    auth_injected = [False]
+    internal_auth_id = "__shim_auth__"
+
     def feed_child():
         try:
             for line in sys.stdin:
@@ -1245,6 +1248,16 @@ def main():
                     request = json.loads(line)
                     method = request.get("method")
                     if method in ("session/new", "session/resume", "session/load"):
+                        if not auth_injected[0]:
+                            auth_injected[0] = True
+                            auth_req = {
+                                "jsonrpc": "2.0",
+                                "id": internal_auth_id,
+                                "method": "authenticate",
+                                "params": {"methodId": "gemini-api-key"},
+                            }
+                            child.stdin.write(json.dumps(auth_req, separators=(",", ":")) + "\n")
+                            child.stdin.flush()
                         params = request.get("params")
                         if isinstance(params, dict):
                             changed = False
@@ -1344,6 +1357,8 @@ def main():
         for line in child.stdout:
             try:
                 message = json.loads(line)
+                if message.get("id") == internal_auth_id:
+                    continue
                 result = message.get("result")
                 if isinstance(result, dict) and ("sessionId" in result or "configOptions" in result or "models" in result):
                     # session/new and session/set_config_option both carry the model list; the client
