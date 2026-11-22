@@ -282,6 +282,25 @@ if install_codex:
             and model["slug"].startswith("gpt-")
             and not model["slug"].startswith("gpt-image-")
         ]
+        # Supplement catalog with newer GPT-6.2 models supported upstream
+        existing_slugs = {m.get("slug") for m in catalog["models"]}
+        astra_template = next((m for m in catalog["models"] if m.get("slug") == "gpt-6-astra"), None)
+        sol_template = next((m for m in catalog["models"] if m.get("slug") == "gpt-6.1-sol"), None)
+        supplements = []
+        if astra_template and "gpt-6.2-astra" not in existing_slugs:
+            m = copy.deepcopy(astra_template)
+            m["slug"] = "gpt-6.2-astra"
+            m["display_name"] = "GPT-6.2-Astra"
+            m["description"] = "Frontier intelligence for the most demanding work (GPT-6.2)."
+            supplements.append(m)
+        if sol_template and "gpt-6.2-sol" not in existing_slugs:
+            m = copy.deepcopy(sol_template)
+            m["slug"] = "gpt-6.2-sol"
+            m["display_name"] = "GPT-6.2-Sol"
+            m["description"] = "High performance and efficiency frontier model (GPT-6.2)."
+            supplements.append(m)
+        if supplements:
+            catalog["models"] = supplements + catalog["models"]
         if not catalog["models"] or not any(m["slug"] == "gpt-6-luna" for m in catalog["models"]):
             raise SystemExit("Codex catalog did not contain the configured GPT model.")
         atomic_json(catalog_path, catalog, 0o600)
